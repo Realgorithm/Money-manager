@@ -4,7 +4,7 @@ import {
   MoreHorizontal, Pencil, Check, Download, Share, Landmark, Banknote, CreditCard, Repeat,
   HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User,
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
-  Lock,
+  Lock, Copy, MessageCircle,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -93,6 +93,14 @@ const incCatInfo = (name) => INCOME_CATEGORIES.find((c) => c.name === name) || I
 const catInfo = (name, type) => (type === "income" ? incCatInfo(name) : expCatInfo(name));
 
 const FREQ_LABEL = { weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly", yearly: "Yearly" };
+
+function buildDebtMessage(d) {
+  const amt = money(d.amount);
+  if (d.direction === "owed_to_me") {
+    return `Hi ${d.person}, quick reminder — you owe me ${amt}${d.note ? ` for ${d.note}` : ""}. Thanks!`;
+  }
+  return `Hi ${d.person}, heads up — I owe you ${amt}${d.note ? ` for ${d.note}` : ""}. I'll get you sorted soon.`;
+}
 
 // Applies (sign=+1) or reverses (sign=-1) a transaction's effect on account balances.
 function applyTxEffect(accountsArr, tx, sign) {
@@ -1144,6 +1152,20 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
 function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ person: "", amount: "", direction: "owed_to_me", note: "" });
+  const [shareFallback, setShareFallback] = useState(null);
+
+  const shareDebt = async (d) => {
+    const message = buildDebtMessage(d);
+    if (navigator.share) {
+      try {
+        await navigator.share({ text: message });
+      } catch {
+        // user cancelled the share sheet — nothing to do
+      }
+    } else {
+      setShareFallback({ debt: d, message });
+    }
+  };
 
   const submit = () => {
     if (!form.person.trim() || !form.amount) return;
@@ -1214,6 +1236,7 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
                   {money(d.amount)}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
+                  <button onClick={() => shareDebt(d)} title="Share with them" style={{ color: "#8A9186", padding: 4 }}><Share size={14} /></button>
                   <button onClick={() => updateDebt(d.id, { settled: true })} title="Mark settled" style={{ color: "#4C8B5C", padding: 4 }}><Check size={14} /></button>
                   <button onClick={() => deleteDebt(d.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
                 </div>
@@ -1237,6 +1260,64 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
           </div>
         </Card>
       )}
+      {shareFallback && <ShareFallbackModal data={shareFallback} onClose={() => setShareFallback(null)} />}
+    </div>
+  );
+}
+
+function ShareFallbackModal({ data, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const { debt, message } = data;
+  const waLink = `https://wa.me/?text=${encodeURIComponent(message)}`;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard may be unavailable — the text is still visible to select manually
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(31,42,29,0.45)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: "#FFFFFF", borderRadius: 16, padding: 20, maxWidth: 380, width: "100%", boxShadow: "0 10px 40px rgba(31,42,29,0.2)" }}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-display" style={{ fontWeight: 700, fontSize: 15, color: "#1F2A1D" }}>Share with {debt.person}</div>
+          <button onClick={onClose} style={{ color: "#8A9186" }}><X size={16} /></button>
+        </div>
+        <div style={{ background: "#F7F8F5", border: "1px solid #E7E9E2", borderRadius: 10, padding: 12, fontSize: 12.5, color: "#4A5247", lineHeight: 1.5, marginBottom: 14 }}>
+          {message}
+        </div>
+        <div className="flex flex-col gap-2">
+          <a
+            href={waLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-2"
+            style={{ background: "#4C8B5C", color: "#fff", borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700, textDecoration: "none" }}
+          >
+            <MessageCircle size={15} /> Open in WhatsApp
+          </a>
+          <button
+            onClick={copy}
+            className="flex items-center justify-center gap-2"
+            style={{ background: "#F7F8F5", color: "#1F2A1D", border: "1px solid #E7E9E2", borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}
+          >
+            <Copy size={14} /> {copied ? "Copied!" : "Copy message"}
+          </button>
+          <div style={{ color: "#B4BAAD", fontSize: 11, lineHeight: 1.4, marginTop: 2 }}>
+            Instagram doesn't support pre-filled DMs from a link — copy the message, then paste it into their chat.
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
