@@ -35,7 +35,7 @@ async function saveKey(key, value) {
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
+const money = (n) => (n < 0 ? "-₹" : "₹") + Math.abs(n).toFixed(2);
 const round2 = (n) => Math.round(n * 100) / 100;
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const monthKeyOf = (dateStr) => (dateStr || todayISO()).slice(0, 7);
