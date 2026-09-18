@@ -4,7 +4,7 @@ import {
   MoreHorizontal, Pencil, Check, Download, Share, Landmark, Banknote, CreditCard, Repeat,
   HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User,
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
-  Lock, Copy, MessageCircle,
+  Lock, Copy, MessageCircle, Building2,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -79,6 +79,7 @@ const EXPENSE_CATEGORIES = [
   { name: "Entertainment", color: "#8D6CB0", icon: Music },
   { name: "Health", color: "#C05C4A", icon: Heart },
   { name: "Shopping", color: "#4CA0AE", icon: ShoppingBag },
+  { name: "Office", color: "#6B8E4E", icon: Building2 },
   { name: "Other", color: "#8A9186", icon: MoreHorizontal },
 ];
 const INCOME_CATEGORIES = [
@@ -88,8 +89,8 @@ const INCOME_CATEGORIES = [
   { name: "Interest", color: "#4A7FB5", icon: Percent },
   { name: "Other", color: "#8A9186", icon: MoreHorizontal },
 ];
-const expCatInfo = (name) => EXPENSE_CATEGORIES.find((c) => c.name === name) || EXPENSE_CATEGORIES[7];
-const incCatInfo = (name) => INCOME_CATEGORIES.find((c) => c.name === name) || INCOME_CATEGORIES[4];
+const expCatInfo = (name) => EXPENSE_CATEGORIES.find((c) => c.name === name) || EXPENSE_CATEGORIES.find((c) => c.name === "Other");
+const incCatInfo = (name) => INCOME_CATEGORIES.find((c) => c.name === name) || INCOME_CATEGORIES.find((c) => c.name === "Other");
 const catInfo = (name, type) => (type === "income" ? incCatInfo(name) : expCatInfo(name));
 
 const FREQ_LABEL = { weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly", yearly: "Yearly" };
@@ -843,6 +844,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
   const [type, setType] = useState("expense");
   const [form, setForm] = useState({ accountId: "", toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
   const [filterAccount, setFilterAccount] = useState("all");
+  const [filterCategory, setFilterCategory] = useState("all");
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
 
@@ -877,7 +879,12 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
     setEditingId(null);
   };
 
-  const visible = transactions.filter((t) => filterAccount === "all" || t.accountId === filterAccount || t.toAccountId === filterAccount);
+  const visible = transactions
+    .filter((t) => filterAccount === "all" || t.accountId === filterAccount || t.toAccountId === filterAccount)
+    .filter((t) => filterCategory === "all" || t.category === filterCategory);
+  const filterActive = filterAccount !== "all" || filterCategory !== "all";
+  const visibleExpenseTotal = round2(visible.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0));
+  const visibleIncomeTotal = round2(visible.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0));
 
   if (accounts.length === 0) {
     return <EmptyState icon={List} text="Add an account first, then you can log transactions." />;
@@ -930,13 +937,38 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
         </button>
       </Card>
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="font-display" style={{ fontWeight: 700, fontSize: 15, color: "#1F2A1D" }}>History</div>
-        <FieldSelect value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)} style={{ width: 170 }}>
-          <option value="all">All accounts</option>
-          {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </FieldSelect>
+        <div className="flex gap-2">
+          <FieldSelect value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} style={{ width: 150 }}>
+            <option value="all">All categories</option>
+            <optgroup label="Expense">
+              {EXPENSE_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </optgroup>
+            <optgroup label="Income">
+              {INCOME_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </optgroup>
+          </FieldSelect>
+          <FieldSelect value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)} style={{ width: 150 }}>
+            <option value="all">All accounts</option>
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </FieldSelect>
+        </div>
       </div>
+
+      {filterActive && (
+        <Card style={{ padding: "12px 16px" }}>
+          <div className="flex items-center gap-5 flex-wrap" style={{ fontSize: 12.5 }}>
+            <span style={{ color: "#8A9186" }}>
+              {visible.length} transaction{visible.length === 1 ? "" : "s"}
+              {filterCategory !== "all" ? ` in ${filterCategory}` : ""}
+              {filterAccount !== "all" ? ` · ${accounts.find((a) => a.id === filterAccount)?.name || ""}` : ""}
+            </span>
+            {visibleExpenseTotal > 0 && <span style={{ color: "#C05C4A", fontWeight: 700 }}>Spent: {money(visibleExpenseTotal)}</span>}
+            {visibleIncomeTotal > 0 && <span style={{ color: "#4C8B5C", fontWeight: 700 }}>Received: {money(visibleIncomeTotal)}</span>}
+          </div>
+        </Card>
+      )}
 
       <Card>
         {visible.length === 0 ? (
