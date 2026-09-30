@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plus, Trash2, X, Wallet, ArrowUpRight, ArrowDownRight, ArrowRightLeft,
   MoreHorizontal, Pencil, Check, Download, Share, Landmark, Banknote, CreditCard, Repeat,
-  HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User, Users,
+  HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User,
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
-  Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet
+  Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet,
+  Camera, Loader2, Sparkles
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -65,9 +66,11 @@ async function hashPin(pin) {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Added 'wallet' account type for topups/wallets
 const ACCOUNT_TYPES = [
   { id: "cash", label: "Cash", icon: Banknote, color: "#4C8B5C" },
   { id: "bank", label: "Bank", icon: Landmark, color: "#4A7FB5" },
+  { id: "wallet", label: "Top-Up / Wallet", icon: Wallet, color: "#D97706" },
   { id: "card", label: "Card", icon: CreditCard, color: "#8D6CB0" },
 ];
 const accountTypeInfo = (id) => ACCOUNT_TYPES.find((a) => a.id === id) || ACCOUNT_TYPES[0];
@@ -86,6 +89,7 @@ const EXPENSE_CATEGORIES = [
 const INCOME_CATEGORIES = [
   { name: "Salary", color: "#4C8B5C", icon: Briefcase },
   { name: "Freelance", color: "#4CA0AE", icon: Laptop },
+  { name: "Top-Up", color: "#D97706", icon: Wallet },
   { name: "Gift", color: "#8D6CB0", icon: Gift },
   { name: "Interest", color: "#4A7FB5", icon: Percent },
   { name: "Other", color: "#8A9186", icon: MoreHorizontal },
@@ -141,6 +145,49 @@ function exportTransactionsToCSV(transactions, accounts) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+// Dynamic Tesseract loader from CDN to ensure zero broken builds if tesseract.js isn't pre-installed
+async function parseScreenshotWithOCR(imageFile) {
+  if (!window.Tesseract) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("Unable to load OCR engine."));
+      document.head.appendChild(script);
+    });
+  }
+
+  const worker = await window.Tesseract.createWorker("eng");
+  const ret = await worker.recognize(imageFile);
+  await worker.terminate();
+
+  const text = ret.data.text || "";
+
+  // 1. Extract Amount
+  let amount = "";
+  const amtMatch = text.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i) || 
+                   text.match(/(?:paid|sent|debited|credited|transferred)\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+                   text.match(/([\d,]+\.\d{2})/);
+  if (amtMatch) {
+    amount = amtMatch[1].replace(/,/g, "");
+  }
+
+  // 2. Transaction Type Detection
+  let type = "expense";
+  if (/received|credited to|cashback|refund|money added|topup successful/i.test(text)) {
+    type = "income";
+  }
+
+  // 3. Merchant / Recipient Note Detection
+  let note = "";
+  const noteMatch = text.match(/(?:paid to|to:?|transferred to|sent to)\s+([A-Za-z0-9&@. -]+)/i);
+  if (noteMatch) {
+    note = noteMatch[1].split("\n")[0].trim().slice(0, 30);
+  }
+
+  return { amount, type, note, rawText: text };
 }
 
 export default function App() {
@@ -343,7 +390,7 @@ export default function App() {
     persistDebts(debts.map((d) => (d.person.toLowerCase() === person.toLowerCase() ? { ...d, settled: true } : d)));
   };
 
-  // Summaries
+  // Derived summaries
   const netWorth = round2(accounts.reduce((s, a) => s + a.balance, 0));
   const thisMonth = monthKeyOf(todayISO());
   const monthTx = transactions.filter((t) => monthKeyOf(t.date) === thisMonth);
@@ -436,10 +483,10 @@ export default function App() {
         style={{ background: "#1F2A1D" }}
       >
         <Plus size={18} />
-        <span className="text-xs font-bold font-display">Log Expense / Debt</span>
+        <span className="text-xs font-bold font-display">Log / Scan Receipt</span>
       </button>
 
-      {/* Global Quick Add Modal */}
+      {/* Global Quick Add Modal with OCR Scanner */}
       {quickAddModal && (
         <QuickAddModal
           accounts={accounts}
@@ -683,6 +730,74 @@ function ProgressBar({ pct, color }) {
   );
 }
 
+// ---- Receipt OCR Uploader Component ---------------------------------------
+
+function ReceiptUploader({ accounts, onParsedData }) {
+  const [loading, setLoading] = useState(false);
+
+  const processFile = async (file) => {
+    if (!file) return;
+    setLoading(true);
+    try {
+      const data = await parseScreenshotWithOCR(file);
+      onParsedData(data);
+    } catch (err) {
+      alert("Could not automatically parse screenshot. Please type details manually.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        processFile(file);
+        break;
+      }
+    }
+  };
+
+  return (
+    <div
+      onPaste={handlePaste}
+      tabIndex={0}
+      className="border-2 border-dashed border-slate-200 rounded-xl p-3 text-center bg-slate-50 hover:bg-slate-100/70 transition-all focus:outline-none focus:border-emerald-600"
+    >
+      <input
+        type="file"
+        accept="image/*"
+        id="ss-input"
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files?.[0]) processFile(e.target.files[0]);
+        }}
+      />
+      <label htmlFor="ss-input" className="cursor-pointer flex flex-col items-center gap-1">
+        {loading ? (
+          <div className="flex items-center gap-2 py-2 text-emerald-700 font-semibold text-xs">
+            <Loader2 className="animate-spin" size={16} />
+            <span>Scanning receipt with OCR…</span>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center gap-1.5 text-emerald-700 bg-emerald-100/70 px-2.5 py-0.5 rounded-full text-[11px] font-bold">
+              <Sparkles size={12} />
+              <span>Smart Screenshot OCR</span>
+            </div>
+            <p className="text-xs text-slate-600 font-medium">
+              Click to upload or <strong>Paste (Ctrl+V)</strong> payment screenshot
+            </p>
+            <span className="text-[10.5px] text-slate-400">Auto-detects Amount, Mode & Matching Wallet</span>
+          </>
+        )}
+      </label>
+    </div>
+  );
+}
+
 // ---- Global Quick Add Modal ----------------------------------------------
 
 function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
@@ -694,6 +809,39 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
   const [accountId, setAccountId] = useState(accounts[0]?.id || "");
   const [category, setCategory] = useState("Food");
   const [note, setNote] = useState("");
+
+  const handleParsedData = (data) => {
+    if (data.amount) setAmount(data.amount);
+    if (data.type) setTxType(data.type);
+    if (data.note) setNote(data.note);
+
+    const lower = (data.rawText || "").toLowerCase();
+
+    // Auto-match category based on merchants
+    if (/swiggy|zomato|chai|tea|restaurant|baker|cafe|dhaba/i.test(lower)) {
+      setCategory("Food");
+    } else if (/uber|ola|rapido|metro|petrol|diesel|fuel|fastag/i.test(lower)) {
+      setCategory("Transport");
+    } else if (/blinkit|zepto|instamart|dmart|amazon|flipkart|shopping/i.test(lower)) {
+      setCategory("Shopping");
+    } else if (/recharge|bill|electricity|broadband|wifi/i.test(lower)) {
+      setCategory("Utilities");
+    }
+
+    // Auto-match Account or Top-up Wallet from screenshot
+    if (data.rawText && accounts.length > 0) {
+      const directMatch = accounts.find((a) => lower.includes(a.name.toLowerCase()));
+      if (directMatch) {
+        setAccountId(directMatch.id);
+      } else {
+        const isWallet = /paytm wallet|phonepe wallet|amazon pay|metro card|top-up|wallet/i.test(lower);
+        if (isWallet) {
+          const walletAcc = accounts.find((a) => a.type === "wallet" || /wallet|metro/i.test(a.name));
+          if (walletAcc) setAccountId(walletAcc.id);
+        }
+      }
+    }
+  };
 
   const submit = () => {
     if (!amount) return;
@@ -727,11 +875,16 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-slate-100"
+        className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-slate-100 max-h-[90vh] overflow-y-auto"
       >
         <div className="flex items-center justify-between mb-3">
           <span className="font-display font-bold text-base text-slate-900">Quick Log</span>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+
+        {/* Screenshot Uploader Component */}
+        <div className="mb-3">
+          <ReceiptUploader accounts={accounts} onParsedData={handleParsedData} />
         </div>
 
         {/* Tab switcher: Transaction vs Debt */}
@@ -763,15 +916,23 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
                 onClick={() => setTxType("income")}
                 className={`flex-1 py-1.5 rounded text-xs font-bold ${txType === "income" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}
               >
-                Income
+                Income / Top-Up
               </button>
             </div>
-            <FieldSelect value={accountId} onChange={(e) => setAccountId(e.target.value)} style={{ width: "100%" }}>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </FieldSelect>
-            <FieldSelect value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: "100%" }}>
-              {EXPENSE_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-            </FieldSelect>
+            <div>
+              <label className="text-[11px] font-semibold text-slate-500 block mb-1">Account / Top-Up Wallet</label>
+              <FieldSelect value={accountId} onChange={(e) => setAccountId(e.target.value)} style={{ width: "100%" }}>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.type})</option>)}
+              </FieldSelect>
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-slate-500 block mb-1">Category</label>
+              <FieldSelect value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: "100%" }}>
+                {(txType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => (
+                  <option key={c.name} value={c.name}>{c.name}</option>
+                ))}
+              </FieldSelect>
+            </div>
           </div>
         ) : (
           <div className="space-y-3">
@@ -832,7 +993,7 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
           </div>
 
           <FieldInput
-            placeholder="Note (optional)"
+            placeholder="Note / Merchant"
             value={note}
             onChange={(e) => setNote(e.target.value)}
             style={{ width: "100%" }}
@@ -841,7 +1002,7 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
 
         <button
           onClick={submit}
-          className="w-full mt-4 bg-slate-900 text-white py-2.5 rounded-lg text-xs font-bold font-display"
+          className="w-full mt-4 bg-slate-900 text-white py-2.5 rounded-lg text-xs font-bold font-display hover:bg-slate-800"
         >
           Save Record
         </button>
@@ -1016,7 +1177,7 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Accounts</div>
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Accounts & Top-Up Wallets</div>
         <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
           <Plus size={14} /> Add account
         </button>
@@ -1025,7 +1186,7 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
       {adding && (
         <Card>
           <div className="grid sm:grid-cols-3 gap-2">
-            <FieldInput placeholder="Account name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            <FieldInput placeholder="Account name (e.g. Paytm, Metro Card)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <FieldSelect value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
               {ACCOUNT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
             </FieldSelect>
@@ -1160,8 +1321,8 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
         <div className="flex gap-2 mb-3">
           {[
             { id: "expense", label: "Expense", icon: ArrowDownRight, color: "#C05C4A" },
-            { id: "income", label: "Income", icon: ArrowUpRight, color: "#4C8B5C" },
-            { id: "transfer", label: "Transfer", icon: ArrowRightLeft, color: "#4A7FB5" },
+            { id: "income", label: "Income / Top-Up", icon: ArrowUpRight, color: "#4C8B5C" },
+            { id: "transfer", label: "Transfer (Top-up Wallet)", icon: ArrowRightLeft, color: "#4A7FB5" },
           ].map((opt) => (
             <button
               key={opt.id}
@@ -1193,13 +1354,15 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
 
         <div className="grid sm:grid-cols-2 gap-2 mb-2">
           <FieldSelect value={form.accountId || (accounts[0]?.id ?? "")} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
-            <option value="">{type === "transfer" ? "From account" : "Account"}</option>
-            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            <option value="">{type === "transfer" ? "From Bank Account" : "Account / Top-Up Wallet"}</option>
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.type})</option>)}
           </FieldSelect>
           {type === "transfer" ? (
             <FieldSelect value={form.toAccountId} onChange={(e) => setForm({ ...form, toAccountId: e.target.value })}>
-              <option value="">To account</option>
-              {accounts.filter((a) => a.id !== (form.accountId || accounts[0]?.id)).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              <option value="">To Top-Up Wallet / Target Account</option>
+              {accounts.filter((a) => a.id !== (form.accountId || accounts[0]?.id)).map((a) => (
+                <option key={a.id} value={a.id}>{a.name} ({a.type})</option>
+              ))}
             </FieldSelect>
           ) : (
             <FieldSelect value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
