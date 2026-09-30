@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plus, Trash2, X, Wallet, ArrowUpRight, ArrowDownRight, ArrowRightLeft,
   MoreHorizontal, Pencil, Check, Download, Share, Landmark, Banknote, CreditCard, Repeat,
   HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User, Users,
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
-  Lock, Copy, MessageCircle, Building2, CheckCheck,
+  Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -117,6 +117,32 @@ function applyTxEffect(accountsArr, tx, sign) {
   });
 }
 
+function exportTransactionsToCSV(transactions, accounts) {
+  const headers = ["Date", "Type", "Category", "Account", "To Account", "Amount", "Note"];
+  const rows = transactions.map((t) => {
+    const acc = accounts.find((a) => a.id === t.accountId)?.name || "";
+    const toAcc = accounts.find((a) => a.id === t.toAccountId)?.name || "";
+    return [
+      t.date,
+      t.type,
+      t.category || "",
+      `"${acc}"`,
+      `"${toAcc}"`,
+      t.amount,
+      `"${(t.note || "").replace(/"/g, '""')}"`,
+    ];
+  });
+  const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", `transactions_${todayISO()}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 export default function App() {
   const [ready, setReady] = useState(false);
   const [credentials, setCredentials] = useState(null);
@@ -128,6 +154,7 @@ export default function App() {
   const [debts, setDebts] = useState([]);
   const [debtMembers, setDebtMembers] = useState(DEFAULT_DEBT_MEMBERS);
   const [tab, setTab] = useState("dashboard");
+  const [quickAddModal, setQuickAddModal] = useState(false);
   const [installEvent, setInstallEvent] = useState(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
   const [iosInstallHint, setIosInstallHint] = useState(false);
@@ -313,10 +340,10 @@ export default function App() {
     persistDebtMembers(debtMembers.filter((m) => m !== name));
   };
   const settleAllWithMember = (person) => {
-    persistDebts(debts.map((d) => (d.person === person ? { ...d, settled: true } : d)));
+    persistDebts(debts.map((d) => (d.person.toLowerCase() === person.toLowerCase() ? { ...d, settled: true } : d)));
   };
 
-  // Derived summaries
+  // Summaries
   const netWorth = round2(accounts.reduce((s, a) => s + a.balance, 0));
   const thisMonth = monthKeyOf(todayISO());
   const monthTx = transactions.filter((t) => monthKeyOf(t.date) === thisMonth);
@@ -349,7 +376,7 @@ export default function App() {
           ios={!showInstallBanner && iosInstallHint}
         />
       )}
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 pb-24 pt-8 sm:pt-10">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pb-28 pt-6 sm:pt-8">
         <Header tab={tab} setTab={setTab} netWorth={netWorth} overdueBills={recurring.filter((r) => r.active && daysUntil(r.nextDue) < 0).length} />
 
         {tab === "dashboard" && (
@@ -399,8 +426,29 @@ export default function App() {
             settleAllWithMember={settleAllWithMember}
           />
         )}
-        {tab === "reports" && <ReportsTab transactions={transactions} />}
+        {tab === "reports" && <ReportsTab transactions={transactions} accounts={accounts} />}
       </div>
+
+      {/* Floating Action Button for Quick Add on any screen */}
+      <button
+        onClick={() => setQuickAddModal(true)}
+        className="fixed bottom-6 right-6 flex items-center gap-2 px-4 py-3 rounded-full text-white shadow-xl hover:scale-105 transition-all z-40"
+        style={{ background: "#1F2A1D" }}
+      >
+        <Plus size={18} />
+        <span className="text-xs font-bold font-display">Log Expense / Debt</span>
+      </button>
+
+      {/* Global Quick Add Modal */}
+      {quickAddModal && (
+        <QuickAddModal
+          accounts={accounts}
+          members={debtMembers}
+          onClose={() => setQuickAddModal(false)}
+          onAddTx={addTransaction}
+          onAddDebt={addDebt}
+        />
+      )}
     </div>
   );
 }
@@ -424,7 +472,7 @@ function GlobalStyle() {
       .font-display { font-family: 'Manrope', sans-serif; }
       input, select { outline: none; }
       input:focus, select:focus { box-shadow: 0 0 0 3px rgba(76,139,92,0.15); border-color: #4C8B5C !important; }
-      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
       ::-webkit-scrollbar-thumb { background: #DCE0D6; border-radius: 4px; }
       .card-hover { transition: box-shadow .15s ease, transform .15s ease; }
       .card-hover:hover { box-shadow: 0 6px 20px rgba(31,42,29,0.08); transform: translateY(-1px); }
@@ -542,49 +590,49 @@ function Header({ tab, setTab, netWorth, overdueBills }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "transactions", label: "Transactions", icon: List },
+    { id: "debts", label: "Debts", icon: HandCoins },
     { id: "accounts", label: "Accounts", icon: Wallet },
     { id: "budgets", label: "Budgets", icon: Target },
     { id: "bills", label: "Bills", icon: Repeat, badge: overdueBills },
-    { id: "debts", label: "Debts", icon: HandCoins },
     { id: "reports", label: "Reports", icon: TrendingUp },
   ];
   return (
-    <div className="mb-7">
-      <div className="flex items-start justify-between flex-wrap gap-3 mb-5">
+    <div className="mb-6">
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
         <div>
-          <h1 className="font-display" style={{ color: "#1F2A1D", fontSize: 28, fontWeight: 800, letterSpacing: -0.5 }}>
+          <h1 className="font-display" style={{ color: "#1F2A1D", fontSize: 26, fontWeight: 800, letterSpacing: -0.5 }}>
             Money Manager
           </h1>
-          <div style={{ color: "#8A9186", fontSize: 13, marginTop: 2 }}>Your accounts, spending, and debts</div>
+          <div style={{ color: "#8A9186", fontSize: 12.5, marginTop: 1 }}>Track accounts, debts & daily flow</div>
         </div>
-        <div className="card-hover" style={{ background: "#FFFFFF", border: "1px solid #E7E9E2", borderRadius: 14, padding: "10px 18px", boxShadow: "0 2px 8px rgba(31,42,29,0.04)" }}>
-          <div style={{ color: "#8A9186", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>Net worth</div>
-          <div className="font-display" style={{ color: netWorth < 0 ? "#C05C4A" : "#1F2A1D", fontSize: 20, fontWeight: 700 }}>
+        <div className="card-hover" style={{ background: "#FFFFFF", border: "1px solid #E7E9E2", borderRadius: 12, padding: "8px 16px", boxShadow: "0 2px 8px rgba(31,42,29,0.04)" }}>
+          <div style={{ color: "#8A9186", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.5 }}>Net worth</div>
+          <div className="font-display" style={{ color: netWorth < 0 ? "#C05C4A" : "#1F2A1D", fontSize: 19, fontWeight: 700 }}>
             {money(netWorth)}
           </div>
         </div>
       </div>
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
         {tabs.map(({ id, label, icon: Icon, badge }) => {
           const active = tab === id;
           return (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className="flex items-center gap-1.5 px-4 py-2"
+              className="flex items-center gap-1.5 px-3 py-1.5 flex-shrink-0"
               style={{
                 background: active ? "#1F2A1D" : "#FFFFFF",
                 color: active ? "#F7F8F5" : "#4A5247",
                 border: `1px solid ${active ? "#1F2A1D" : "#E7E9E2"}`,
-                borderRadius: 10,
-                fontSize: 13.5,
+                borderRadius: 8,
+                fontSize: 13,
                 fontWeight: 600,
               }}
             >
-              <Icon size={15} />
+              <Icon size={14} />
               {label}
               {badge > 0 && (
-                <span style={{ background: active ? "#F7F8F5" : "#C05C4A", color: active ? "#1F2A1D" : "#fff", fontSize: 10, borderRadius: 8, padding: "1px 6px", fontWeight: 700 }}>
+                <span style={{ background: active ? "#F7F8F5" : "#C05C4A", color: active ? "#1F2A1D" : "#fff", fontSize: 10, borderRadius: 8, padding: "1px 5px", fontWeight: 700 }}>
                   {badge}
                 </span>
               )}
@@ -600,14 +648,14 @@ function StatCard({ label, value, color }) {
   return (
     <div>
       <div style={{ color: "#8A9186", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
-      <div className="font-display" style={{ color: color || "#1F2A1D", fontSize: 20, fontWeight: 700 }}>{value}</div>
+      <div className="font-display" style={{ color: color || "#1F2A1D", fontSize: 19, fontWeight: 700 }}>{value}</div>
     </div>
   );
 }
 
 function EmptyState({ icon: Icon, text }) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 gap-2" style={{ color: "#B4BAAD", gridColumn: "1 / -1" }}>
+    <div className="flex flex-col items-center justify-center py-12 gap-2" style={{ color: "#B4BAAD", gridColumn: "1 / -1" }}>
       <Icon size={24} />
       <div style={{ fontSize: 13 }}>{text}</div>
     </div>
@@ -631,6 +679,173 @@ function ProgressBar({ pct, color }) {
   return (
     <div style={{ background: "#EDEFEA", borderRadius: 6, height: 7, overflow: "hidden" }}>
       <div style={{ width: `${Math.min(100, pct)}%`, background: color, height: "100%", borderRadius: 6 }} />
+    </div>
+  );
+}
+
+// ---- Global Quick Add Modal ----------------------------------------------
+
+function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
+  const [mode, setMode] = useState("tx"); // 'tx' or 'debt'
+  const [txType, setTxType] = useState("expense");
+  const [debtDir, setDebtDir] = useState("owed_to_me");
+  const [amount, setAmount] = useState("");
+  const [person, setPerson] = useState(members[0] || "");
+  const [accountId, setAccountId] = useState(accounts[0]?.id || "");
+  const [category, setCategory] = useState("Food");
+  const [note, setNote] = useState("");
+
+  const submit = () => {
+    if (!amount) return;
+    if (mode === "tx") {
+      onAddTx({
+        accountId,
+        type: txType,
+        category,
+        amount,
+        note: note.trim(),
+        date: todayISO(),
+      });
+    } else {
+      if (!person) return;
+      onAddDebt({
+        person,
+        amount,
+        direction: debtDir,
+        note: note.trim(),
+      });
+    }
+    onClose();
+  };
+
+  const quickAmounts = [100, 200, 500, 1000];
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-slate-100"
+      >
+        <div className="flex items-center justify-between mb-3">
+          <span className="font-display font-bold text-base text-slate-900">Quick Log</span>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+
+        {/* Tab switcher: Transaction vs Debt */}
+        <div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-3">
+          <button
+            onClick={() => setMode("tx")}
+            className={`flex-1 py-1 text-xs font-semibold rounded ${mode === "tx" ? "bg-white shadow text-slate-800" : "text-slate-500"}`}
+          >
+            Expense / Income
+          </button>
+          <button
+            onClick={() => setMode("debt")}
+            className={`flex-1 py-1 text-xs font-semibold rounded ${mode === "debt" ? "bg-white shadow text-slate-800" : "text-slate-500"}`}
+          >
+            Debt (IOU)
+          </button>
+        </div>
+
+        {mode === "tx" ? (
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setTxType("expense")}
+                className={`flex-1 py-1.5 rounded text-xs font-bold ${txType === "expense" ? "bg-rose-600 text-white" : "bg-slate-100 text-slate-600"}`}
+              >
+                Expense
+              </button>
+              <button
+                onClick={() => setTxType("income")}
+                className={`flex-1 py-1.5 rounded text-xs font-bold ${txType === "income" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}
+              >
+                Income
+              </button>
+            </div>
+            <FieldSelect value={accountId} onChange={(e) => setAccountId(e.target.value)} style={{ width: "100%" }}>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </FieldSelect>
+            <FieldSelect value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: "100%" }}>
+              {EXPENSE_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </FieldSelect>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDebtDir("owed_to_me")}
+                className={`flex-1 py-1.5 rounded text-xs font-bold ${debtDir === "owed_to_me" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}
+              >
+                They owe me
+              </button>
+              <button
+                onClick={() => setDebtDir("i_owe")}
+                className={`flex-1 py-1.5 rounded text-xs font-bold ${debtDir === "i_owe" ? "bg-rose-600 text-white" : "bg-slate-100 text-slate-600"}`}
+              >
+                I owe them
+              </button>
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {members.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setPerson(m)}
+                  className={`text-xs px-2.5 py-1 rounded-md border flex-shrink-0 font-medium ${person === m ? "bg-slate-900 text-white border-slate-900" : "bg-slate-50 text-slate-600"}`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <FieldInput
+              placeholder="Or enter person name"
+              value={person}
+              onChange={(e) => setPerson(e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </div>
+        )}
+
+        <div className="mt-3 space-y-2">
+          <FieldInput
+            type="number"
+            placeholder="Amount (₹)"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            style={{ width: "100%", fontSize: 16, fontWeight: 700 }}
+          />
+
+          <div className="flex gap-1.5">
+            {quickAmounts.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => setAmount(String(q))}
+                className="flex-1 bg-slate-100 text-slate-700 py-1 rounded text-xs font-bold"
+              >
+                +₹{q}
+              </button>
+            ))}
+          </div>
+
+          <FieldInput
+            placeholder="Note (optional)"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <button
+          onClick={submit}
+          className="w-full mt-4 bg-slate-900 text-white py-2.5 rounded-lg text-xs font-bold font-display"
+        >
+          Save Record
+        </button>
+      </div>
     </div>
   );
 }
@@ -670,8 +885,8 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
       <div className="grid sm:grid-cols-2 gap-4">
         <Card>
           <div className="flex items-center justify-between mb-3">
-            <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D" }}>Debts</div>
-            <button onClick={() => setTab("debts")} style={{ fontSize: 11.5, color: "#8A9186", textDecoration: "underline" }}>view all</button>
+            <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D" }}>Debts Summary</div>
+            <button onClick={() => setTab("debts")} style={{ fontSize: 11.5, color: "#8A9186", textDecoration: "underline" }}>manage debts</button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <StatCard label="Owed to you" value={money(owedToMe)} color="#4C8B5C" />
@@ -685,7 +900,7 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
             <button onClick={() => setTab("bills")} style={{ fontSize: 11.5, color: "#8A9186", textDecoration: "underline" }}>view all</button>
           </div>
           {upcoming.length === 0 ? (
-            <div style={{ color: "#B4BAAD", fontSize: 12.5 }}>No recurring bills yet.</div>
+            <div style={{ color: "#B4BAAD", fontSize: 12.5 }}>No recurring bills due soon.</div>
           ) : (
             <div className="flex flex-col gap-2">
               {upcoming.map((r) => {
@@ -732,7 +947,7 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
           <button onClick={() => setTab("transactions")} style={{ fontSize: 11.5, color: "#8A9186", textDecoration: "underline" }}>view all</button>
         </div>
         {recent.length === 0 ? (
-          <div style={{ color: "#B4BAAD", fontSize: 12.5 }}>No transactions yet.</div>
+          <div style={{ color: "#B4BAAD", fontSize: 12.5 }}>No transactions logged yet.</div>
         ) : (
           <div className="flex flex-col gap-2">
             {recent.map((t) => (
@@ -877,12 +1092,20 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
 function TransactionsTab({ accounts, transactions, addTransaction, updateTransaction, deleteTransaction }) {
   const [type, setType] = useState("expense");
   const [form, setForm] = useState({ accountId: "", toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
+  const [search, setSearch] = useState("");
   const [filterAccount, setFilterAccount] = useState("all");
   const [filterCategory, setFilterCategory] = useState("all");
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
 
   const cats = type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+
+  const quickPresets = [
+    { label: "Chai / Snacks", category: "Food", amount: "50" },
+    { label: "Metro / Auto", category: "Transport", amount: "60" },
+    { label: "Lunch / Dinner", category: "Food", amount: "250" },
+    { label: "Groceries", category: "Shopping", amount: "500" },
+  ];
 
   const submit = () => {
     if (!form.accountId || !form.amount) return;
@@ -891,7 +1114,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
       accountId: form.accountId,
       toAccountId: type === "transfer" ? form.toAccountId : undefined,
       type,
-      category: type === "transfer" ? undefined : (form.category || cats[cats.length - 1].name),
+      category: type === "transfer" ? undefined : (form.category || cats[0].name),
       amount: form.amount,
       note: form.note.trim(),
       date: form.date || todayISO(),
@@ -913,10 +1136,17 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
     setEditingId(null);
   };
 
-  const visible = transactions
-    .filter((t) => filterAccount === "all" || t.accountId === filterAccount || t.toAccountId === filterAccount)
-    .filter((t) => filterCategory === "all" || t.category === filterCategory);
-  const filterActive = filterAccount !== "all" || filterCategory !== "all";
+  const visible = useMemo(() => {
+    return transactions
+      .filter((t) => filterAccount === "all" || t.accountId === filterAccount || t.toAccountId === filterAccount)
+      .filter((t) => filterCategory === "all" || t.category === filterCategory)
+      .filter((t) => {
+        if (!search.trim()) return true;
+        const q = search.toLowerCase();
+        return (t.note || "").toLowerCase().includes(q) || (t.category || "").toLowerCase().includes(q);
+      });
+  }, [transactions, filterAccount, filterCategory, search]);
+
   const visibleExpenseTotal = round2(visible.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0));
   const visibleIncomeTotal = round2(visible.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0));
 
@@ -944,15 +1174,32 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
           ))}
         </div>
 
+        {/* Quick Tag Presets */}
+        {type === "expense" && (
+          <div className="flex items-center gap-1.5 mb-2.5 overflow-x-auto pb-1">
+            <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Quick:</span>
+            {quickPresets.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => setForm({ ...form, category: p.category, amount: p.amount, note: p.label })}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded text-xs font-semibold flex-shrink-0"
+              >
+                {p.label} (₹{p.amount})
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="grid sm:grid-cols-2 gap-2 mb-2">
-          <FieldSelect value={form.accountId} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
+          <FieldSelect value={form.accountId || (accounts[0]?.id ?? "")} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
             <option value="">{type === "transfer" ? "From account" : "Account"}</option>
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </FieldSelect>
           {type === "transfer" ? (
             <FieldSelect value={form.toAccountId} onChange={(e) => setForm({ ...form, toAccountId: e.target.value })}>
               <option value="">To account</option>
-              {accounts.filter((a) => a.id !== form.accountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {accounts.filter((a) => a.id !== (form.accountId || accounts[0]?.id)).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </FieldSelect>
           ) : (
             <FieldSelect value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
@@ -962,7 +1209,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
           )}
         </div>
         <div className="grid sm:grid-cols-3 gap-2 mb-3">
-          <FieldInput type="number" step="0.01" placeholder="Amount" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+          <FieldInput type="number" step="0.01" placeholder="Amount (₹)" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
           <FieldInput placeholder="Note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
           <FieldInput type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
         </div>
@@ -971,10 +1218,23 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
         </button>
       </Card>
 
+      {/* Filter and Search Bar */}
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 15, color: "#1F2A1D" }}>History</div>
+        <div className="flex items-center gap-2 flex-1 max-w-sm">
+          <div className="relative w-full">
+            <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search note or category..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-800"
+            />
+          </div>
+        </div>
+
         <div className="flex gap-2">
-          <FieldSelect value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} style={{ width: 150 }}>
+          <FieldSelect value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} style={{ width: 140, fontSize: 12 }}>
             <option value="all">All categories</option>
             <optgroup label="Expense">
               {EXPENSE_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
@@ -983,20 +1243,25 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
               {INCOME_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
             </optgroup>
           </FieldSelect>
-          <FieldSelect value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)} style={{ width: 150 }}>
+          <FieldSelect value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)} style={{ width: 130, fontSize: 12 }}>
             <option value="all">All accounts</option>
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </FieldSelect>
+          <button
+            onClick={() => exportTransactionsToCSV(transactions, accounts)}
+            title="Export CSV"
+            className="p-2 border border-slate-200 bg-white rounded-lg hover:bg-slate-50 text-slate-700"
+          >
+            <Download size={14} />
+          </button>
         </div>
       </div>
 
-      {filterActive && (
-        <Card style={{ padding: "12px 16px" }}>
-          <div className="flex items-center gap-5 flex-wrap" style={{ fontSize: 12.5 }}>
+      {(filterAccount !== "all" || filterCategory !== "all" || search) && (
+        <Card style={{ padding: "10px 14px" }}>
+          <div className="flex items-center gap-4 flex-wrap" style={{ fontSize: 12 }}>
             <span style={{ color: "#8A9186" }}>
-              {visible.length} transaction{visible.length === 1 ? "" : "s"}
-              {filterCategory !== "all" ? ` in ${filterCategory}` : ""}
-              {filterAccount !== "all" ? ` · ${accounts.find((a) => a.id === filterAccount)?.name || ""}` : ""}
+              {visible.length} matches
             </span>
             {visibleExpenseTotal > 0 && <span style={{ color: "#C05C4A", fontWeight: 700 }}>Spent: {money(visibleExpenseTotal)}</span>}
             {visibleIncomeTotal > 0 && <span style={{ color: "#4C8B5C", fontWeight: 700 }}>Received: {money(visibleIncomeTotal)}</span>}
@@ -1006,7 +1271,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
 
       <Card>
         {visible.length === 0 ? (
-          <EmptyState icon={List} text="No transactions yet." />
+          <EmptyState icon={List} text="No transactions match your search." />
         ) : (
           <div className="flex flex-col gap-3">
             {visible.map((t) =>
@@ -1113,7 +1378,7 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
     addRecurring({
       name: form.name.trim(),
       type: form.type,
-      category: form.category || cats[cats.length - 1].name,
+      category: form.category || cats[0].name,
       accountId: form.accountId,
       amount: round2(Number(form.amount) || 0),
       frequency: form.frequency,
@@ -1220,6 +1485,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
   const [form, setForm] = useState({ person: members[0] || "", amount: "", direction: "owed_to_me", note: "" });
   const [newMemberInput, setNewMemberInput] = useState("");
   const [filterPerson, setFilterPerson] = useState("all");
+  const [expandedPerson, setExpandedPerson] = useState(null);
   const [shareFallback, setShareFallback] = useState(null);
 
   const shareDebt = async (d) => {
@@ -1255,7 +1521,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
     const owedByThem = personDebts.filter((d) => d.direction === "owed_to_me").reduce((s, d) => s + d.amount, 0);
     const iOweThem = personDebts.filter((d) => d.direction === "i_owe").reduce((s, d) => s + d.amount, 0);
     const net = round2(owedByThem - iOweThem);
-    return { person, owedByThem, iOweThem, net, count: personDebts.length };
+    return { person, owedByThem, iOweThem, net, count: personDebts.length, items: personDebts };
   });
 
   const active = debts
@@ -1285,73 +1551,91 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
       </div>
 
       <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
-        {memberBalances.map(({ person, net, count }) => (
+        {memberBalances.map(({ person, net, count, items }) => (
           <div
             key={person}
-            className="card-hover"
-            style={{
-              background: "#FFFFFF",
-              border: `1px solid ${filterPerson === person ? "#1F2A1D" : "#E7E9E2"}`,
-              borderRadius: 12,
-              padding: 12,
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-            }}
+            className="card-hover bg-white border border-slate-200 rounded-xl p-3 flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between">
-              <span className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D" }}>{person}</span>
-              <div className="flex items-center gap-1">
-                {count > 0 && (
-                  <button
-                    onClick={() => settleAllWithMember(person)}
-                    title="Settle all with this member"
-                    style={{ color: "#4C8B5C", padding: 3 }}
-                  >
-                    <CheckCheck size={14} />
-                  </button>
-                )}
-                {!DEFAULT_DEBT_MEMBERS.includes(person) && count === 0 && (
-                  <button onClick={() => removeMember(person)} title="Remove member" style={{ color: "#8A9186", padding: 3 }}>
-                    <X size={13} />
-                  </button>
-                )}
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="font-display font-bold text-sm text-slate-800">{person}</span>
+                <div className="flex items-center gap-1">
+                  {count > 0 && (
+                    <button
+                      onClick={() => settleAllWithMember(person)}
+                      title="Settle all with this member"
+                      className="text-emerald-700 hover:text-emerald-800 p-1"
+                    >
+                      <CheckCheck size={14} />
+                    </button>
+                  )}
+                  {!DEFAULT_DEBT_MEMBERS.includes(person) && count === 0 && (
+                    <button onClick={() => removeMember(person)} title="Remove member" className="text-slate-400 hover:text-rose-600 p-1">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-baseline justify-between mt-1.5">
+                <span className="text-xs text-slate-400">
+                  {net > 0 ? "Owes you" : net < 0 ? "You owe" : "All settled"}
+                </span>
+                <span
+                  className="font-display font-extrabold text-sm"
+                  style={{ color: net > 0 ? "#4C8B5C" : net < 0 ? "#C05C4A" : "#8A9186" }}
+                >
+                  {net === 0 ? "₹0.00" : money(net)}
+                </span>
               </div>
             </div>
-            <div className="flex items-baseline justify-between mt-1">
-              <span style={{ fontSize: 12, color: "#8A9186" }}>
-                {net > 0 ? "Owes you" : net < 0 ? "You owe" : "All settled"}
-              </span>
-              <span
-                className="font-display"
-                style={{
-                  fontWeight: 800,
-                  fontSize: 15,
-                  color: net > 0 ? "#4C8B5C" : net < 0 ? "#C05C4A" : "#8A9186",
-                }}
-              >
-                {net === 0 ? "₹0.00" : money(net)}
-              </span>
-            </div>
-            <div className="flex gap-1.5 mt-2 pt-2 border-t border-slate-100">
-              <button
-                onClick={() => {
-                  setForm({ ...form, person, direction: "owed_to_me" });
-                  setAdding(true);
-                }}
-                style={{ flex: 1, background: "#F7F8F5", color: "#4C8B5C", borderRadius: 6, fontSize: 11, fontWeight: 700, padding: "4px" }}
-              >
-                + Lent
-              </button>
-              <button
-                onClick={() => {
-                  setForm({ ...form, person, direction: "i_owe" });
-                  setAdding(true);
-                }}
-                style={{ flex: 1, background: "#F7F8F5", color: "#C05C4A", borderRadius: 6, fontSize: 11, fontWeight: 700, padding: "4px" }}
-              >
-                + Borrowed
-              </button>
+
+            {/* Quick Actions & Detail dropdown */}
+            <div className="mt-3 pt-2 border-t border-slate-100 flex flex-col gap-1.5">
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => {
+                    setForm({ ...form, person, direction: "owed_to_me" });
+                    setAdding(true);
+                  }}
+                  className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded py-1 text-xs font-bold"
+                >
+                  + Lent
+                </button>
+                <button
+                  onClick={() => {
+                    setForm({ ...form, person, direction: "i_owe" });
+                    setAdding(true);
+                  }}
+                  className="flex-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded py-1 text-xs font-bold"
+                >
+                  + Borrowed
+                </button>
+              </div>
+
+              {count > 0 && (
+                <button
+                  onClick={() => setExpandedPerson(expandedPerson === person ? null : person)}
+                  className="w-full text-center text-[11px] text-slate-500 hover:text-slate-800 flex items-center justify-center gap-1 pt-1"
+                >
+                  {expandedPerson === person ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  {count} open item{count > 1 ? "s" : ""}
+                </button>
+              )}
+
+              {/* Collapsible item breakdown */}
+              {expandedPerson === person && (
+                <div className="mt-1 bg-slate-50 p-2 rounded-lg space-y-1.5 text-xs">
+                  {items.map((it) => (
+                    <div key={it.id} className="flex items-center justify-between text-slate-700">
+                      <span className="truncate pr-1">{it.note || "Unspecified"}</span>
+                      <span className={`font-semibold flex-shrink-0 ${it.direction === "owed_to_me" ? "text-emerald-700" : "text-rose-700"}`}>
+                        {money(it.amount)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -1370,21 +1654,13 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
         </button>
       </form>
 
-      {/* Action Header */}
+      {/* Filter and Log Bar */}
       <div className="flex items-center justify-between mt-2 flex-wrap gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#8A9186" }}>Filter:</span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#8A9186" }}>Filter:</span>
           <button
             onClick={() => setFilterPerson("all")}
-            style={{
-              padding: "4px 10px",
-              borderRadius: 8,
-              fontSize: 12,
-              fontWeight: 600,
-              background: filterPerson === "all" ? "#1F2A1D" : "#FFFFFF",
-              color: filterPerson === "all" ? "#F7F8F5" : "#4A5247",
-              border: "1px solid #E7E9E2",
-            }}
+            className={`px-2.5 py-1 rounded-md text-xs font-semibold border ${filterPerson === "all" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"}`}
           >
             All
           </button>
@@ -1392,15 +1668,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
             <button
               key={m}
               onClick={() => setFilterPerson(m)}
-              style={{
-                padding: "4px 10px",
-                borderRadius: 8,
-                fontSize: 12,
-                fontWeight: 600,
-                background: filterPerson === m ? "#1F2A1D" : "#FFFFFF",
-                color: filterPerson === m ? "#F7F8F5" : "#4A5247",
-                border: "1px solid #E7E9E2",
-              }}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold border ${filterPerson === m ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"}`}
             >
               {m}
             </button>
@@ -1409,7 +1677,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
         <button
           onClick={() => setAdding((v) => !v)}
           className="flex items-center gap-1.5"
-          style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}
+          style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
         >
           <Plus size={14} /> Log Debt
         </button>
@@ -1433,7 +1701,6 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
             </button>
           </div>
 
-          {/* Quick Member select pills */}
           <div className="flex items-center gap-1.5 mb-2 overflow-x-auto py-1">
             <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Select person:</span>
             {members.map((m) => (
@@ -1472,7 +1739,6 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
             />
           </div>
 
-          {/* Quick Amount presets */}
           <div className="flex items-center gap-1.5 mb-2">
             <span style={{ fontSize: 11, color: "#8A9186" }}>Quick amount:</span>
             {quickAmounts.map((q) => (
@@ -1615,7 +1881,7 @@ function ShareFallbackModal({ data, onClose }) {
 
 // ---- Reports ---------------------------------------------------------
 
-function ReportsTab({ transactions }) {
+function ReportsTab({ transactions, accounts }) {
   const months = [];
   const base = new Date();
   for (let i = 5; i >= 0; i--) {
@@ -1641,6 +1907,16 @@ function ReportsTab({ transactions }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex justify-end">
+        <button
+          onClick={() => exportTransactionsToCSV(transactions, accounts)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50"
+        >
+          <FileSpreadsheet size={14} className="text-emerald-600" />
+          Export All Transactions (CSV)
+        </button>
+      </div>
+
       <Card>
         <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D", marginBottom: 14 }}>Income vs. expense — last 6 months</div>
         <div className="flex flex-col gap-3">
