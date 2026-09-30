@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   Plus, Trash2, X, Wallet, ArrowUpRight, ArrowDownRight, ArrowRightLeft,
   MoreHorizontal, Pencil, Check, Download, Share, Landmark, Banknote, CreditCard, Repeat,
-  HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User,
+  HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User, Users,
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
-  Lock, Copy, MessageCircle, Building2,
+  Lock, Copy, MessageCircle, Building2, CheckCheck,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -15,8 +15,11 @@ const KEYS = {
   budgets: "finance:budgets",
   recurring: "finance:recurring",
   debts: "finance:debts",
+  debtMembers: "finance:debt_members",
   credentials: "finance:credentials",
 };
+
+const DEFAULT_DEBT_MEMBERS = ["Raghib", "Kamil", "Maaz", "Shaahzeb", "Fariya"];
 
 async function loadKey(key, fallback) {
   try {
@@ -39,8 +42,6 @@ const money = (n) => (n < 0 ? "-₹" : "₹") + Math.abs(n).toFixed(2);
 const round2 = (n) => Math.round(n * 100) / 100;
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const monthKeyOf = (dateStr) => (dateStr || todayISO()).slice(0, 7);
-const fmtDate = (d) =>
-  new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 const fmtDateShort = (d) =>
   new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const monthLabel = (mk) => {
@@ -103,7 +104,6 @@ function buildDebtMessage(d) {
   return `Hi ${d.person}, heads up — I owe you ${amt}${d.note ? ` for ${d.note}` : ""}. I'll get you sorted soon.`;
 }
 
-// Applies (sign=+1) or reverses (sign=-1) a transaction's effect on account balances.
 function applyTxEffect(accountsArr, tx, sign) {
   return accountsArr.map((a) => {
     if (tx.type === "transfer") {
@@ -126,6 +126,7 @@ export default function App() {
   const [budgets, setBudgets] = useState([]);
   const [recurring, setRecurring] = useState([]);
   const [debts, setDebts] = useState([]);
+  const [debtMembers, setDebtMembers] = useState(DEFAULT_DEBT_MEMBERS);
   const [tab, setTab] = useState("dashboard");
   const [installEvent, setInstallEvent] = useState(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
@@ -133,12 +134,13 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [acc, tx, bud, rec, dbt, creds] = await Promise.all([
+      const [acc, tx, bud, rec, dbt, members, creds] = await Promise.all([
         loadKey(KEYS.accounts, []),
         loadKey(KEYS.transactions, []),
         loadKey(KEYS.budgets, []),
         loadKey(KEYS.recurring, []),
         loadKey(KEYS.debts, []),
+        loadKey(KEYS.debtMembers, DEFAULT_DEBT_MEMBERS),
         loadKey(KEYS.credentials, null),
       ]);
       setAccounts(acc);
@@ -146,6 +148,7 @@ export default function App() {
       setBudgets(bud);
       setRecurring(rec);
       setDebts(dbt);
+      setDebtMembers(members && members.length > 0 ? members : DEFAULT_DEBT_MEMBERS);
       setCredentials(creds);
       setUnlocked(sessionStorage.getItem("finance_unlocked") === "1");
       setReady(true);
@@ -157,15 +160,17 @@ export default function App() {
   const persistBudgets = useCallback((next) => { setBudgets(next); saveKey(KEYS.budgets, next); }, []);
   const persistRecurring = useCallback((next) => { setRecurring(next); saveKey(KEYS.recurring, next); }, []);
   const persistDebts = useCallback((next) => { setDebts(next); saveKey(KEYS.debts, next); }, []);
+  const persistDebtMembers = useCallback((next) => { setDebtMembers(next); saveKey(KEYS.debtMembers, next); }, []);
   const persistCredentials = useCallback((next) => { setCredentials(next); saveKey(KEYS.credentials, next); }, []);
 
   const reloadAll = useCallback(async () => {
-    const [acc, tx, bud, rec, dbt, creds] = await Promise.all([
+    const [acc, tx, bud, rec, dbt, members, creds] = await Promise.all([
       loadKey(KEYS.accounts, []),
       loadKey(KEYS.transactions, []),
       loadKey(KEYS.budgets, []),
       loadKey(KEYS.recurring, []),
       loadKey(KEYS.debts, []),
+      loadKey(KEYS.debtMembers, DEFAULT_DEBT_MEMBERS),
       loadKey(KEYS.credentials, null),
     ]);
     setAccounts(acc);
@@ -173,6 +178,7 @@ export default function App() {
     setBudgets(bud);
     setRecurring(rec);
     setDebts(dbt);
+    setDebtMembers(members && members.length > 0 ? members : DEFAULT_DEBT_MEMBERS);
     setCredentials(creds);
   }, []);
 
@@ -189,7 +195,7 @@ export default function App() {
     };
   }, [ready, reloadAll]);
 
-  // PWA install banner (same pattern as Household Goods).
+  // PWA install banner
   useEffect(() => {
     const isStandalone =
       window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
@@ -233,7 +239,7 @@ export default function App() {
     localStorage.setItem("financeInstallBannerDismissed", "1");
   }, []);
 
-  // ---- money operations --------------------------------------------------
+  // Transactions
   const addTransaction = (txData) => {
     const tx = {
       id: uid(),
@@ -257,10 +263,12 @@ export default function App() {
     persistTransactions(transactions.filter((t) => t.id !== tx.id));
   };
 
+  // Accounts
   const addAccount = (data) => persistAccounts([...accounts, { id: uid(), balance: 0, ...data }]);
   const updateAccount = (id, updates) => persistAccounts(accounts.map((a) => (a.id === id ? { ...a, ...updates } : a)));
   const deleteAccount = (id) => persistAccounts(accounts.filter((a) => a.id !== id));
 
+  // Budgets
   const upsertBudget = (category, limit) => {
     const exists = budgets.find((b) => b.category === category);
     if (exists) persistBudgets(budgets.map((b) => (b.category === category ? { ...b, limit } : b)));
@@ -268,6 +276,7 @@ export default function App() {
   };
   const deleteBudget = (category) => persistBudgets(budgets.filter((b) => b.category !== category));
 
+  // Recurring bills
   const addRecurring = (data) => persistRecurring([...recurring, { id: uid(), active: true, ...data }]);
   const updateRecurring = (id, updates) => persistRecurring(recurring.map((r) => (r.id === id ? { ...r, ...updates } : r)));
   const deleteRecurring = (id) => persistRecurring(recurring.filter((r) => r.id !== id));
@@ -284,12 +293,30 @@ export default function App() {
     updateRecurring(bill.id, { nextDue: addInterval(bill.nextDue, bill.frequency) });
   };
 
-  const addDebt = (data) =>
-    persistDebts([{ id: uid(), date: todayISO(), settled: false, ...data, amount: Math.abs(Number(data.amount) || 0) }, ...debts]);
+  // Debts & Members
+  const addDebt = (data) => {
+    const cleanPerson = data.person.trim();
+    if (!debtMembers.includes(cleanPerson)) {
+      persistDebtMembers([...debtMembers, cleanPerson]);
+    }
+    persistDebts([{ id: uid(), date: todayISO(), settled: false, ...data, person: cleanPerson, amount: Math.abs(Number(data.amount) || 0) }, ...debts]);
+  };
   const updateDebt = (id, updates) => persistDebts(debts.map((d) => (d.id === id ? { ...d, ...updates } : d)));
   const deleteDebt = (id) => persistDebts(debts.filter((d) => d.id !== id));
 
-  // ---- derived numbers ----------------------------------------------------
+  const addDebtMember = (name) => {
+    const clean = name.trim();
+    if (!clean || debtMembers.includes(clean)) return;
+    persistDebtMembers([...debtMembers, clean]);
+  };
+  const removeDebtMember = (name) => {
+    persistDebtMembers(debtMembers.filter((m) => m !== name));
+  };
+  const settleAllWithMember = (person) => {
+    persistDebts(debts.map((d) => (d.person === person ? { ...d, settled: true } : d)));
+  };
+
+  // Derived summaries
   const netWorth = round2(accounts.reduce((s, a) => s + a.balance, 0));
   const thisMonth = monthKeyOf(todayISO());
   const monthTx = transactions.filter((t) => monthKeyOf(t.date) === thisMonth);
@@ -359,7 +386,18 @@ export default function App() {
           <BillsTab accounts={accounts} recurring={recurring} addRecurring={addRecurring} updateRecurring={updateRecurring} deleteRecurring={deleteRecurring} markBillPaid={markBillPaid} />
         )}
         {tab === "debts" && (
-          <DebtsTab debts={debts} owedToMe={owedToMe} iOwe={iOwe} addDebt={addDebt} updateDebt={updateDebt} deleteDebt={deleteDebt} />
+          <DebtsTab
+            debts={debts}
+            members={debtMembers}
+            owedToMe={owedToMe}
+            iOwe={iOwe}
+            addDebt={addDebt}
+            updateDebt={updateDebt}
+            deleteDebt={deleteDebt}
+            addMember={addDebtMember}
+            removeMember={removeDebtMember}
+            settleAllWithMember={settleAllWithMember}
+          />
         )}
         {tab === "reports" && <ReportsTab transactions={transactions} />}
       </div>
@@ -367,7 +405,7 @@ export default function App() {
   );
 }
 
-// ---- chrome: loading, pin gate, global style, header, toasts, install --
+// ---- chrome & utility elements -------------------------------------------
 
 function LoadingScreen() {
   return (
@@ -426,7 +464,7 @@ function PinSetup({ onDone }) {
       </div>
       <h1 className="font-display" style={{ color: "#1F2A1D", fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Set a PIN</h1>
       <div style={{ color: "#8A9186", fontSize: 13, marginBottom: 18 }}>
-        This is your personal money manager — set a PIN to keep it from opening on a shared or lost device.
+        Personal money manager — set a PIN to keep your records private on this device.
       </div>
       <div className="flex flex-col gap-2 mb-3">
         <FieldInput type="password" inputMode="numeric" placeholder="New PIN" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} />
@@ -436,9 +474,6 @@ function PinSetup({ onDone }) {
       <button disabled={busy} onClick={submit} className="w-full" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 10, padding: "12px 16px", fontWeight: 700, fontSize: 13.5, opacity: busy ? 0.6 : 1 }}>
         Set PIN
       </button>
-      <div style={{ color: "#B4BAAD", fontSize: 11, marginTop: 12, lineHeight: 1.5 }}>
-        This PIN just gates the app screen — it isn't bank-grade encryption. Don't reuse a sensitive password here.
-      </div>
     </AuthShell>
   );
 }
@@ -585,9 +620,9 @@ function FieldInput(props) {
 function FieldSelect(props) {
   return <select {...props} style={{ background: "#F7F8F5", color: "#1F2A1D", border: "1px solid #E7E9E2", borderRadius: 8, fontSize: 13, padding: "8px 10px", ...props.style }} />;
 }
-function Card({ children, style }) {
+function Card({ children, style, className }) {
   return (
-    <div style={{ background: "#FFFFFF", border: "1px solid #E7E9E2", borderRadius: 14, padding: 16, boxShadow: "0 2px 8px rgba(31,42,29,0.04)", ...style }}>
+    <div className={className} style={{ background: "#FFFFFF", border: "1px solid #E7E9E2", borderRadius: 14, padding: 16, boxShadow: "0 2px 8px rgba(31,42,29,0.04)", ...style }}>
       {children}
     </div>
   );
@@ -840,7 +875,6 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
 // ---- Transactions ------------------------------------------------------
 
 function TransactionsTab({ accounts, transactions, addTransaction, updateTransaction, deleteTransaction }) {
-  const [adding, setAdding] = useState(accounts.length > 0);
   const [type, setType] = useState("expense");
   const [form, setForm] = useState({ accountId: "", toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
   const [filterAccount, setFilterAccount] = useState("all");
@@ -1179,11 +1213,13 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
   );
 }
 
-// ---- Debts / IOUs ---------------------------------------------------------
+// ---- Debts / IOUs with Member Support ------------------------------------
 
-function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
+function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteDebt, addMember, removeMember, settleAllWithMember }) {
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ person: "", amount: "", direction: "owed_to_me", note: "" });
+  const [form, setForm] = useState({ person: members[0] || "", amount: "", direction: "owed_to_me", note: "" });
+  const [newMemberInput, setNewMemberInput] = useState("");
+  const [filterPerson, setFilterPerson] = useState("all");
   const [shareFallback, setShareFallback] = useState(null);
 
   const shareDebt = async (d) => {
@@ -1192,7 +1228,7 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
       try {
         await navigator.share({ text: message });
       } catch {
-        // user cancelled the share sheet — nothing to do
+        // user cancelled share sheet
       }
     } else {
       setShareFallback({ debt: d, message });
@@ -1202,15 +1238,39 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
   const submit = () => {
     if (!form.person.trim() || !form.amount) return;
     addDebt({ person: form.person.trim(), amount: form.amount, direction: form.direction, note: form.note.trim() });
-    setForm({ person: "", amount: "", direction: "owed_to_me", note: "" });
+    setForm({ person: form.person, amount: "", direction: "owed_to_me", note: "" });
     setAdding(false);
   };
 
-  const active = debts.filter((d) => !d.settled);
-  const settled = debts.filter((d) => d.settled);
+  const handleCreateMember = (e) => {
+    e.preventDefault();
+    if (!newMemberInput.trim()) return;
+    addMember(newMemberInput.trim());
+    setNewMemberInput("");
+  };
+
+  // Compute breakdown per member
+  const memberBalances = members.map((person) => {
+    const personDebts = debts.filter((d) => d.person.toLowerCase() === person.toLowerCase() && !d.settled);
+    const owedByThem = personDebts.filter((d) => d.direction === "owed_to_me").reduce((s, d) => s + d.amount, 0);
+    const iOweThem = personDebts.filter((d) => d.direction === "i_owe").reduce((s, d) => s + d.amount, 0);
+    const net = round2(owedByThem - iOweThem);
+    return { person, owedByThem, iOweThem, net, count: personDebts.length };
+  });
+
+  const active = debts
+    .filter((d) => !d.settled)
+    .filter((d) => filterPerson === "all" || d.person.toLowerCase() === filterPerson.toLowerCase());
+
+  const settled = debts
+    .filter((d) => d.settled)
+    .filter((d) => filterPerson === "all" || d.person.toLowerCase() === filterPerson.toLowerCase());
+
+  const quickAmounts = [100, 200, 500, 1000];
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Top Totals */}
       <Card>
         <div className="grid grid-cols-3 gap-4">
           <StatCard label="Owed to you" value={money(owedToMe)} color="#4C8B5C" />
@@ -1219,47 +1279,245 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
         </div>
       </Card>
 
+      {/* Member Cards Grid */}
       <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Debts</div>
-        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
-          <Plus size={14} /> Add debt
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Members & Balances</div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+        {memberBalances.map(({ person, net, count }) => (
+          <div
+            key={person}
+            className="card-hover"
+            style={{
+              background: "#FFFFFF",
+              border: `1px solid ${filterPerson === person ? "#1F2A1D" : "#E7E9E2"}`,
+              borderRadius: 12,
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D" }}>{person}</span>
+              <div className="flex items-center gap-1">
+                {count > 0 && (
+                  <button
+                    onClick={() => settleAllWithMember(person)}
+                    title="Settle all with this member"
+                    style={{ color: "#4C8B5C", padding: 3 }}
+                  >
+                    <CheckCheck size={14} />
+                  </button>
+                )}
+                {!DEFAULT_DEBT_MEMBERS.includes(person) && count === 0 && (
+                  <button onClick={() => removeMember(person)} title="Remove member" style={{ color: "#8A9186", padding: 3 }}>
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="flex items-baseline justify-between mt-1">
+              <span style={{ fontSize: 12, color: "#8A9186" }}>
+                {net > 0 ? "Owes you" : net < 0 ? "You owe" : "All settled"}
+              </span>
+              <span
+                className="font-display"
+                style={{
+                  fontWeight: 800,
+                  fontSize: 15,
+                  color: net > 0 ? "#4C8B5C" : net < 0 ? "#C05C4A" : "#8A9186",
+                }}
+              >
+                {net === 0 ? "₹0.00" : money(net)}
+              </span>
+            </div>
+            <div className="flex gap-1.5 mt-2 pt-2 border-t border-slate-100">
+              <button
+                onClick={() => {
+                  setForm({ ...form, person, direction: "owed_to_me" });
+                  setAdding(true);
+                }}
+                style={{ flex: 1, background: "#F7F8F5", color: "#4C8B5C", borderRadius: 6, fontSize: 11, fontWeight: 700, padding: "4px" }}
+              >
+                + Lent
+              </button>
+              <button
+                onClick={() => {
+                  setForm({ ...form, person, direction: "i_owe" });
+                  setAdding(true);
+                }}
+                style={{ flex: 1, background: "#F7F8F5", color: "#C05C4A", borderRadius: 6, fontSize: 11, fontWeight: 700, padding: "4px" }}
+              >
+                + Borrowed
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Add New Member Input */}
+      <form onSubmit={handleCreateMember} className="flex gap-2">
+        <FieldInput
+          placeholder="Add another member (e.g. Ayman, Faraz)..."
+          value={newMemberInput}
+          onChange={(e) => setNewMemberInput(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        <button type="submit" style={{ background: "#1F2A1D", color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
+          + Add Person
+        </button>
+      </form>
+
+      {/* Action Header */}
+      <div className="flex items-center justify-between mt-2 flex-wrap gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#8A9186" }}>Filter:</span>
+          <button
+            onClick={() => setFilterPerson("all")}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 8,
+              fontSize: 12,
+              fontWeight: 600,
+              background: filterPerson === "all" ? "#1F2A1D" : "#FFFFFF",
+              color: filterPerson === "all" ? "#F7F8F5" : "#4A5247",
+              border: "1px solid #E7E9E2",
+            }}
+          >
+            All
+          </button>
+          {members.map((m) => (
+            <button
+              key={m}
+              onClick={() => setFilterPerson(m)}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 8,
+                fontSize: 12,
+                fontWeight: 600,
+                background: filterPerson === m ? "#1F2A1D" : "#FFFFFF",
+                color: filterPerson === m ? "#F7F8F5" : "#4A5247",
+                border: "1px solid #E7E9E2",
+              }}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setAdding((v) => !v)}
+          className="flex items-center gap-1.5"
+          style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}
+        >
+          <Plus size={14} /> Log Debt
         </button>
       </div>
 
+      {/* Add Debt Card */}
       {adding && (
         <Card>
           <div className="flex gap-2 mb-2">
-            <button onClick={() => setForm({ ...form, direction: "owed_to_me" })} style={{ flex: 1, background: form.direction === "owed_to_me" ? "#4C8B5C" : "#F7F8F5", color: form.direction === "owed_to_me" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}>
-              They owe me
+            <button
+              onClick={() => setForm({ ...form, direction: "owed_to_me" })}
+              style={{ flex: 1, background: form.direction === "owed_to_me" ? "#4C8B5C" : "#F7F8F5", color: form.direction === "owed_to_me" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
+            >
+              They owe me (I Lent)
             </button>
-            <button onClick={() => setForm({ ...form, direction: "i_owe" })} style={{ flex: 1, background: form.direction === "i_owe" ? "#C05C4A" : "#F7F8F5", color: form.direction === "i_owe" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}>
-              I owe them
+            <button
+              onClick={() => setForm({ ...form, direction: "i_owe" })}
+              style={{ flex: 1, background: form.direction === "i_owe" ? "#C05C4A" : "#F7F8F5", color: form.direction === "i_owe" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
+            >
+              I owe them (I Borrowed)
             </button>
           </div>
+
+          {/* Quick Member select pills */}
+          <div className="flex items-center gap-1.5 mb-2 overflow-x-auto py-1">
+            <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Select person:</span>
+            {members.map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setForm({ ...form, person: m })}
+                style={{
+                  background: form.person === m ? "#1F2A1D" : "#F7F8F5",
+                  color: form.person === m ? "#fff" : "#4A5247",
+                  fontSize: 11.5,
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  fontWeight: 600,
+                  border: "1px solid #E7E9E2",
+                  flexShrink: 0,
+                }}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+
           <div className="grid sm:grid-cols-2 gap-2 mb-2">
-            <FieldInput placeholder="Person's name" value={form.person} onChange={(e) => setForm({ ...form, person: e.target.value })} />
-            <FieldInput type="number" step="0.01" placeholder="Amount" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+            <FieldInput
+              placeholder="Person's name"
+              value={form.person}
+              onChange={(e) => setForm({ ...form, person: e.target.value })}
+            />
+            <FieldInput
+              type="number"
+              step="0.01"
+              placeholder="Amount (₹)"
+              value={form.amount}
+              onChange={(e) => setForm({ ...form, amount: e.target.value })}
+            />
           </div>
-          <FieldInput placeholder="Note (optional — what's it for?)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} style={{ width: "100%", marginBottom: 12 }} />
+
+          {/* Quick Amount presets */}
+          <div className="flex items-center gap-1.5 mb-2">
+            <span style={{ fontSize: 11, color: "#8A9186" }}>Quick amount:</span>
+            {quickAmounts.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => setForm({ ...form, amount: String(q) })}
+                style={{ background: "#F7F8F5", border: "1px solid #E7E9E2", color: "#4A5247", borderRadius: 6, padding: "3px 8px", fontSize: 11.5, fontWeight: 600 }}
+              >
+                +₹{q}
+              </button>
+            ))}
+          </div>
+
+          <FieldInput
+            placeholder="Note (e.g. Biryani, Metro recharge, Chai, Rent)"
+            value={form.note}
+            onChange={(e) => setForm({ ...form, note: e.target.value })}
+            style={{ width: "100%", marginBottom: 12 }}
+          />
+
           <div className="flex gap-2">
-            <button onClick={submit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
-            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>Cancel</button>
+            <button onClick={submit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>
+              Save Debt
+            </button>
+            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>
+              Cancel
+            </button>
           </div>
         </Card>
       )}
 
+      {/* Active List */}
       <Card>
         {active.length === 0 ? (
-          <EmptyState icon={HandCoins} text="No open debts." />
+          <EmptyState icon={HandCoins} text={filterPerson === "all" ? "No open debts." : `No open debts for ${filterPerson}.`} />
         ) : (
           <div className="flex flex-col gap-3">
             {active.map((d) => (
               <div key={d.id} className="flex items-center gap-3">
-                <div style={{ width: 30, height: 30, borderRadius: 8, background: (d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A") + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <User size={14} color={d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A"} />
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: (d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A") + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <User size={15} color={d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A"} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1F2A1D" }}>{d.person}</div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{d.person}</div>
                   <div style={{ fontSize: 11, color: "#8A9186" }}>
                     {d.direction === "owed_to_me" ? "owes you" : "you owe"} · {fmtDateShort(d.date)}{d.note ? ` · ${d.note}` : ""}
                   </div>
@@ -1268,7 +1526,7 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
                   {money(d.amount)}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  <button onClick={() => shareDebt(d)} title="Share with them" style={{ color: "#8A9186", padding: 4 }}><Share size={14} /></button>
+                  <button onClick={() => shareDebt(d)} title="Share reminder" style={{ color: "#8A9186", padding: 4 }}><Share size={14} /></button>
                   <button onClick={() => updateDebt(d.id, { settled: true })} title="Mark settled" style={{ color: "#4C8B5C", padding: 4 }}><Check size={14} /></button>
                   <button onClick={() => deleteDebt(d.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
                 </div>
@@ -1278,13 +1536,16 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
         )}
       </Card>
 
+      {/* Settled List */}
       {settled.length > 0 && (
         <Card>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#8A9186", marginBottom: 8 }}>Settled</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#8A9186", marginBottom: 8 }}>Settled History</div>
           <div className="flex flex-col gap-2">
             {settled.map((d) => (
-              <div key={d.id} className="flex items-center gap-3" style={{ opacity: 0.55 }}>
-                <div style={{ flex: 1, fontSize: 12.5, color: "#1F2A1D", textDecoration: "line-through" }}>{d.person} — {money(d.amount)}</div>
+              <div key={d.id} className="flex items-center gap-3" style={{ opacity: 0.65 }}>
+                <div style={{ flex: 1, fontSize: 12.5, color: "#1F2A1D", textDecoration: "line-through" }}>
+                  {d.person} — {money(d.amount)} {d.note ? `(${d.note})` : ""}
+                </div>
                 <button onClick={() => updateDebt(d.id, { settled: false })} style={{ fontSize: 11, color: "#8A9186", textDecoration: "underline" }}>reopen</button>
                 <button onClick={() => deleteDebt(d.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={12} /></button>
               </div>
@@ -1292,6 +1553,7 @@ function DebtsTab({ debts, owedToMe, iOwe, addDebt, updateDebt, deleteDebt }) {
           </div>
         </Card>
       )}
+
       {shareFallback && <ShareFallbackModal data={shareFallback} onClose={() => setShareFallback(null)} />}
     </div>
   );
@@ -1308,7 +1570,7 @@ function ShareFallbackModal({ data, onClose }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // clipboard may be unavailable — the text is still visible to select manually
+      // best effort
     }
   };
 
@@ -1345,9 +1607,6 @@ function ShareFallbackModal({ data, onClose }) {
           >
             <Copy size={14} /> {copied ? "Copied!" : "Copy message"}
           </button>
-          <div style={{ color: "#B4BAAD", fontSize: 11, lineHeight: 1.4, marginTop: 2 }}>
-            Instagram doesn't support pre-filled DMs from a link — copy the message, then paste it into their chat.
-          </div>
         </div>
       </div>
     </div>
