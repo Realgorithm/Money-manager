@@ -8,7 +8,7 @@ import {
   Camera, Loader2, Sparkles
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
-import { parsePaymentReceipt } from "./receiptParser";
+import { parsePaymentReceipt, matchAccount } from "./receiptParser";
 
 // ---- storage helpers ---------------------------------------------------
 const KEYS = {
@@ -810,33 +810,29 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt, initial
     if (data.type) setTxType(data.type);
     if (data.note) setNote(data.note);
 
-    const lower = (data.rawText || "").toLowerCase();
-
-    // Auto-match category based on merchants
-    if (/swiggy|zomato|chai|tea|restaurant|baker|cafe|dhaba/i.test(lower)) {
-      setCategory("Food");
-    } else if (/uber|ola|rapido|metro|petrol|diesel|fuel|fastag/i.test(lower)) {
-      setCategory("Transport");
-    } else if (/blinkit|zepto|instamart|dmart|amazon|flipkart|shopping/i.test(lower)) {
-      setCategory("Shopping");
-    } else if (/recharge|bill|electricity|broadband|wifi/i.test(lower)) {
-      setCategory("Utilities");
+    // Category: the parser's guess is already specific to income vs expense.
+    // For an income receipt always set a valid income category (the old code
+    // left the stale expense one, e.g. "Food", while the dropdown displayed
+    // "Salary"), and only override an expense category on a confident match.
+    if (data.type === "income") {
+      setCategory(data.category || "Other");
+    } else if (data.category) {
+      setCategory(data.category);
     }
 
-    // Auto-match Account or Top-up Wallet from screenshot
-    if (data.rawText && accounts.length > 0) {
-      const directMatch = accounts.find((a) => lower.includes(a.name.toLowerCase()));
-      if (directMatch) {
-        setAccountId(directMatch.id);
-      } else {
-        const isWallet = /paytm wallet|phonepe wallet|amazon pay|metro card|top-up|wallet/i.test(lower);
-        if (isWallet) {
-          const walletAcc = accounts.find((a) => a.type === "wallet" || /wallet|metro/i.test(a.name));
-          if (walletAcc) setAccountId(walletAcc.id);
-        }
-      }
-    }
+    // Auto-match the account from the screenshot (masked a/c digits, bank
+    // name like "Bank of Baroda" → "BOB", account name, or a real wallet).
+    const acc = matchAccount(accounts, data.rawText);
+    if (acc) setAccountId(acc.id);
   };
+
+  // Keep the category valid for the selected type (switching Expense ↔ Income
+  // by hand used to leave an invalid category in state).
+  useEffect(() => {
+    const list = txType === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+    if (!list.some((c) => c.name === category)) setCategory(list[0].name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txType]);
 
   const submit = () => {
     if (!amount) return;
