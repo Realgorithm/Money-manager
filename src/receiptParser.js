@@ -1,97 +1,37 @@
-// On-demand CDN loader to avoid build-time crashes
-async function getTesseractWorker() {
-  if (!window.Tesseract) {
-    await new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src =
-        "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-      script.onload = resolve;
-      script.onerror = () => reject(new Error("Unable to load OCR engine."));
-      document.head.appendChild(script);
-    });
-  }
-  return await window.Tesseract.createWorker("eng");
-}
+import { createWorker } from "tesseract.js";
 
+// Reads a UPI/bank payment screenshot and pulls out amount, transaction
+// type, and a merchant/recipient note. Uses the npm-installed tesseract.js
+// (bundled by Vite) — NOT a CDN script — so the version actually running
+// always matches what's in package.json and works reliably.
 export async function parsePaymentReceipt(imageFile) {
-  const worker = await getTesseractWorker();
-  const ret = await worker.recognize(imageFile);
-  await worker.terminate();
+  const worker = await createWorker("eng");
+  try {
+    const { data } = await worker.recognize(imageFile);
+    const text = data.text || "";
 
-  const text = ret.data.text || "";
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+    // 1. Amount — ₹/Rs/INR prefix, or "paid/sent/debited/credited <amount>",
+    //    or a bare decimal amount as a last resort.
+    let amount = "";
+    const amtMatch =
+      text.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+      text.match(/(?:paid|sent|debited|credited|transferred)\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+      text.match(/([\d,]+\.\d{2})/);
+    if (amtMatch) amount = amtMatch[1].replace(/,/g, "");
 
-  // 1. Amount Extraction (₹28, ₹47, ₹323, with or without decimals/commas)[span_10](start_span)[span_10](end_span)[span_11](start_span)[span_11](end_span)[span_12](start_span)[span_12](end_span)
-  let amount = "";
-  const amountMatch =
-    text.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-    text.match(
-      /(?:paid|sent|received)\s*(?:successfully)?\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d{1,2})?)/i,
-    );
-  if (amountMatch) {
-    amount = amountMatch[1].replace(/,/g, "");
-  } else {
-    for (let i = 0; i < lines.length; i++) {
-      if (/paid successfully|payment successful/i.test(lines[i])) {
-        const candidate = lines[i - 1] || lines[i + 1];
-        const num = candidate?.match(/[\d,]+(?:\.\d{1,2})?/);
-        if (num) {
-          amount = num[0].replace(/,/g, "");
-          break;
-        }
-      }
+    // 2. Income vs expense
+    let type = "expense";
+    if (/received|credited to|cashback|refund|money added|top[\s-]?up successful/i.test(text)) {
+      type = "income";
     }
+
+    // 3. Merchant / recipient note
+    let note = "";
+    const noteMatch = text.match(/(?:paid to|to:?|transferred to|sent to)\s+([A-Za-z0-9&@. -]+)/i);
+    if (noteMatch) note = noteMatch[1].split("\n")[0].trim().slice(0, 30);
+
+    return { amount, type, note, rawText: text };
+  } finally {
+    await worker.terminate();
   }
-
-  // 2. Transaction Type Detection
-  let type = "expense";
-  if (
-    /received from|credited to|refund|cashback|money added|topup successful/i.test(
-      text,
-    )
-  ) {
-    type = "income";
-  }
-
-  // 3. Name & Note Extraction for Amazon Pay, Paytm, Navi[span_13](start_span)[span_13](end_span)[span_14](start_span)[span_14](end_span)[span_15](start_span)[span_15](end_span)
-  let note = "";
-
-  // Format: "to <NAME>" or "Paid to <NAME>"
-  const directLine = lines.find((l) => /^(?:paid to|to)\b/i.test(l));
-  if (directLine) {
-    note = directLine.replace(/^(?:paid to|to)[:\s]*/i, "").trim();
-  }
-
-  // Amazon Pay layout: "Paid to" is header, name follows[span_16](start_span)[span_16](end_span)
-  if (!note) {
-    const paidToIdx = lines.findIndex((l) => /^paid to$/i.test(l));
-    if (paidToIdx !== -1 && lines[paidToIdx + 1]) {
-      note = lines[paidToIdx + 1].replace(/^(mr|ms|mrs)\.?\s+/i, "");
-    }
-  }
-
-  // Paytm layout: Recipient is top line right below brand[span_17](start_span)[span_17](end_span)
-  if (!note) {
-    const paytmIdx = lines.findIndex((l) => /paytm/i.test(l));
-    if (
-      paytmIdx !== -1 &&
-      lines[paytmIdx + 1] &&
-      !/paid|rupee|₹/i.test(lines[paytmIdx + 1])
-    ) {
-      note = lines[paytmIdx + 1];
-    }
-  }
-
-  // Navi layout: "to RAGHIB HUSSAIN[span_18](start_span)"[span_18](end_span)
-  if (!note) {
-    const toMatch = text.match(/to\s+([A-Za-z ]{3,30})/i);
-    if (toMatch) {
-      note = toMatch[1].trim();
-    }
-  }
-
-  return { amount, type, note: (note || "").slice(0, 35), rawText: text };
 }
