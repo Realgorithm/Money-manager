@@ -42,7 +42,11 @@ async function saveKey(key, value) {
 const uid = () => Math.random().toString(36).slice(2, 10);
 const money = (n) => (n < 0 ? "-₹" : "₹") + Math.abs(n).toFixed(2);
 const round2 = (n) => Math.round(n * 100) / 100;
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 const monthKeyOf = (dateStr) => (dateStr || todayISO()).slice(0, 7);
 const fmtDateShort = (d) =>
   new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -1249,8 +1253,14 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
   const [filterCategory, setFilterCategory] = useState("all");
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  const [error, setError] = useState("");
 
   const cats = type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+
+  // The "From / Account" dropdown visually defaults to the first account, so the
+  // logic must default to it too. Previously form.accountId stayed "" until the
+  // user manually changed the dropdown, and submit() silently bailed out.
+  const effectiveAccountId = accounts.some((a) => a.id === form.accountId) ? form.accountId : (accounts[0]?.id ?? "");
 
   const quickPresets = [
     { label: "Chai / Snacks", category: "Food", amount: "50" },
@@ -1260,18 +1270,24 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
   ];
 
   const submit = () => {
-    if (!form.accountId || !form.amount) return;
-    if (type === "transfer" && (!form.toAccountId || form.toAccountId === form.accountId)) return;
+    const amt = Number(form.amount);
+    if (!effectiveAccountId) return setError("Pick an account first.");
+    if (!form.amount || !isFinite(amt) || amt <= 0) return setError("Enter an amount greater than 0.");
+    if (type === "transfer") {
+      if (!form.toAccountId) return setError("Choose the account to transfer to.");
+      if (form.toAccountId === effectiveAccountId) return setError("From and To accounts must be different.");
+    }
+    setError("");
     addTransaction({
-      accountId: form.accountId,
+      accountId: effectiveAccountId,
       toAccountId: type === "transfer" ? form.toAccountId : undefined,
       type,
       category: type === "transfer" ? undefined : (form.category || cats[0].name),
-      amount: form.amount,
+      amount: amt,
       note: form.note.trim(),
       date: form.date || todayISO(),
     });
-    setForm({ accountId: form.accountId, toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
+    setForm({ accountId: effectiveAccountId, toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
   };
 
   const startEdit = (t) => { setEditingId(t.id); setEditForm({ ...t, amount: t.amount }); };
@@ -1317,7 +1333,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
           ].map((opt) => (
             <button
               key={opt.id}
-              onClick={() => { setType(opt.id); setForm({ ...form, category: "" }); }}
+              onClick={() => { setType(opt.id); setError(""); setForm({ ...form, category: "", toAccountId: "" }); }}
               className="flex items-center gap-1.5"
               style={{ background: type === opt.id ? opt.color : "#F7F8F5", color: type === opt.id ? "#fff" : "#4A5247", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
             >
@@ -1344,14 +1360,13 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
         )}
 
         <div className="grid sm:grid-cols-2 gap-2 mb-2">
-          <FieldSelect value={form.accountId || (accounts[0]?.id ?? "")} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
-            <option value="">{type === "transfer" ? "From Bank Account" : "Account / Top-Up Wallet"}</option>
+          <FieldSelect value={effectiveAccountId} onChange={(e) => setForm({ ...form, accountId: e.target.value, toAccountId: e.target.value === form.toAccountId ? "" : form.toAccountId })}>
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.type})</option>)}
           </FieldSelect>
           {type === "transfer" ? (
             <FieldSelect value={form.toAccountId} onChange={(e) => setForm({ ...form, toAccountId: e.target.value })}>
               <option value="">To Top-Up Wallet / Target Account</option>
-              {accounts.filter((a) => a.id !== (form.accountId || accounts[0]?.id)).map((a) => (
+              {accounts.filter((a) => a.id !== effectiveAccountId).map((a) => (
                 <option key={a.id} value={a.id}>{a.name} ({a.type})</option>
               ))}
             </FieldSelect>
@@ -1367,6 +1382,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
           <FieldInput placeholder="Note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
           <FieldInput type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
         </div>
+        {error && <div style={{ color: "#C05C4A", fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{error}</div>}
         <button onClick={submit} style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
           Add {type}
         </button>
