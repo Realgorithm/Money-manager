@@ -5,9 +5,10 @@ import {
   HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User,
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
   Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet,
-  Camera, Loader2, Sparkles
+  Camera, RefreshCw
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
+import ReceiptUploader from "./ReceiptUploader";
 
 // ---- storage helpers ---------------------------------------------------
 const KEYS = {
@@ -24,35 +25,62 @@ const DEFAULT_DEBT_MEMBERS = ["Raghib", "Kamil", "Maaz", "Shaahzeb", "Fariya"];
 
 async function loadKey(key, fallback) {
   try {
-    const res = await window.storage.get(key, true);
-    return res ? JSON.parse(res.value) : fallback;
+    if (typeof window !== "undefined" && window.storage && typeof window.storage.get === "function") {
+      const res = await window.storage.get(key, true);
+      if (res && res.value !== undefined) {
+        const parsed = JSON.parse(res.value);
+        return parsed !== null && parsed !== undefined ? parsed : fallback;
+      }
+    }
+    const local = localStorage.getItem(key);
+    return local ? JSON.parse(local) : fallback;
   } catch {
     return fallback;
   }
 }
+
 async function saveKey(key, value) {
   try {
-    await window.storage.set(key, JSON.stringify(value), true);
+    const serialized = JSON.stringify(value);
+    if (typeof window !== "undefined" && window.storage && typeof window.storage.set === "function") {
+      await window.storage.set(key, serialized, true);
+    }
+    localStorage.setItem(key, serialized);
   } catch {
     // best effort
   }
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-const money = (n) => (n < 0 ? "-₹" : "₹") + Math.abs(n).toFixed(2);
-const round2 = (n) => Math.round(n * 100) / 100;
+const money = (n) => (Number(n) < 0 ? "-₹" : "₹") + Math.abs(Number(n) || 0).toFixed(2);
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const monthKeyOf = (dateStr) => (dateStr || todayISO()).slice(0, 7);
-const fmtDateShort = (d) =>
-  new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
-const monthLabel = (mk) => {
-  const [y, m] = mk.split("-").map(Number);
-  return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "short" });
+const fmtDateShort = (d) => {
+  try {
+    return new Date((d || todayISO()) + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return d || "";
+  }
 };
-const daysUntil = (d) => Math.round((new Date(d + "T00:00:00") - new Date(todayISO() + "T00:00:00")) / 86400000);
+const monthLabel = (mk) => {
+  try {
+    const [y, m] = (mk || "").split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "short" });
+  } catch {
+    return mk || "";
+  }
+};
+const daysUntil = (d) => {
+  try {
+    return Math.round((new Date(d + "T00:00:00") - new Date(todayISO() + "T00:00:00")) / 86400000);
+  } catch {
+    return 0;
+  }
+};
 
 function addInterval(dateStr, freq) {
-  const d = new Date(dateStr + "T00:00:00");
+  const d = new Date((dateStr || todayISO()) + "T00:00:00");
   if (freq === "weekly") d.setDate(d.getDate() + 7);
   else if (freq === "biweekly") d.setDate(d.getDate() + 14);
   else if (freq === "monthly") d.setMonth(d.getMonth() + 1);
@@ -66,12 +94,11 @@ async function hashPin(pin) {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Added 'wallet' account type for topups/wallets
 const ACCOUNT_TYPES = [
   { id: "cash", label: "Cash", icon: Banknote, color: "#4C8B5C" },
-  { id: "bank", label: "Bank", icon: Landmark, color: "#4A7FB5" },
+  { id: "bank", label: "Bank Account", icon: Landmark, color: "#4A7FB5" },
   { id: "wallet", label: "Top-Up / Wallet", icon: Wallet, color: "#D97706" },
-  { id: "card", label: "Card", icon: CreditCard, color: "#8D6CB0" },
+  { id: "card", label: "Credit/Debit Card", icon: CreditCard, color: "#8D6CB0" },
 ];
 const accountTypeInfo = (id) => ACCOUNT_TYPES.find((a) => a.id === id) || ACCOUNT_TYPES[0];
 
@@ -89,13 +116,13 @@ const EXPENSE_CATEGORIES = [
 const INCOME_CATEGORIES = [
   { name: "Salary", color: "#4C8B5C", icon: Briefcase },
   { name: "Freelance", color: "#4CA0AE", icon: Laptop },
-  { name: "Top-Up", color: "#D97706", icon: Wallet },
+  { name: "Top-Up Added", color: "#D97706", icon: Wallet },
   { name: "Gift", color: "#8D6CB0", icon: Gift },
   { name: "Interest", color: "#4A7FB5", icon: Percent },
   { name: "Other", color: "#8A9186", icon: MoreHorizontal },
 ];
-const expCatInfo = (name) => EXPENSE_CATEGORIES.find((c) => c.name === name) || EXPENSE_CATEGORIES.find((c) => c.name === "Other");
-const incCatInfo = (name) => INCOME_CATEGORIES.find((c) => c.name === name) || INCOME_CATEGORIES.find((c) => c.name === "Other");
+const expCatInfo = (name) => EXPENSE_CATEGORIES.find((c) => c.name === name) || EXPENSE_CATEGORIES[EXPENSE_CATEGORIES.length - 1];
+const incCatInfo = (name) => INCOME_CATEGORIES.find((c) => c.name === name) || INCOME_CATEGORIES[INCOME_CATEGORIES.length - 1];
 const catInfo = (name, type) => (type === "income" ? incCatInfo(name) : expCatInfo(name));
 
 const FREQ_LABEL = { weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly", yearly: "Yearly" };
@@ -109,7 +136,9 @@ function buildDebtMessage(d) {
 }
 
 function applyTxEffect(accountsArr, tx, sign) {
-  return accountsArr.map((a) => {
+  const safeAccounts = Array.isArray(accountsArr) ? accountsArr : [];
+  return safeAccounts.map((a) => {
+    if (!a) return a;
     if (tx.type === "transfer") {
       if (a.id === tx.accountId) return { ...a, balance: round2(a.balance - sign * tx.amount) };
       if (a.id === tx.toAccountId) return { ...a, balance: round2(a.balance + sign * tx.amount) };
@@ -122,17 +151,19 @@ function applyTxEffect(accountsArr, tx, sign) {
 }
 
 function exportTransactionsToCSV(transactions, accounts) {
+  const safeTx = Array.isArray(transactions) ? transactions : [];
+  const safeAcc = Array.isArray(accounts) ? accounts : [];
   const headers = ["Date", "Type", "Category", "Account", "To Account", "Amount", "Note"];
-  const rows = transactions.map((t) => {
-    const acc = accounts.find((a) => a.id === t.accountId)?.name || "";
-    const toAcc = accounts.find((a) => a.id === t.toAccountId)?.name || "";
+  const rows = safeTx.map((t) => {
+    const acc = safeAcc.find((a) => a && a.id === t.accountId)?.name || "";
+    const toAcc = safeAcc.find((a) => a && a.id === t.toAccountId)?.name || "";
     return [
-      t.date,
-      t.type,
+      t.date || "",
+      t.type || "",
       t.category || "",
       `"${acc}"`,
       `"${toAcc}"`,
-      t.amount,
+      t.amount || 0,
       `"${(t.note || "").replace(/"/g, '""')}"`,
     ];
   });
@@ -147,49 +178,6 @@ function exportTransactionsToCSV(transactions, accounts) {
   document.body.removeChild(link);
 }
 
-// Dynamic Tesseract loader from CDN to ensure zero broken builds if tesseract.js isn't pre-installed
-async function parseScreenshotWithOCR(imageFile) {
-  if (!window.Tesseract) {
-    await new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-      script.onload = resolve;
-      script.onerror = () => reject(new Error("Unable to load OCR engine."));
-      document.head.appendChild(script);
-    });
-  }
-
-  const worker = await window.Tesseract.createWorker("eng");
-  const ret = await worker.recognize(imageFile);
-  await worker.terminate();
-
-  const text = ret.data.text || "";
-
-  // 1. Extract Amount
-  let amount = "";
-  const amtMatch = text.match(/(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i) || 
-                   text.match(/(?:paid|sent|debited|credited|transferred)\s*(?:₹|rs\.?|inr)?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-                   text.match(/([\d,]+\.\d{2})/);
-  if (amtMatch) {
-    amount = amtMatch[1].replace(/,/g, "");
-  }
-
-  // 2. Transaction Type Detection
-  let type = "expense";
-  if (/received|credited to|cashback|refund|money added|topup successful/i.test(text)) {
-    type = "income";
-  }
-
-  // 3. Merchant / Recipient Note Detection
-  let note = "";
-  const noteMatch = text.match(/(?:paid to|to:?|transferred to|sent to)\s+([A-Za-z0-9&@. -]+)/i);
-  if (noteMatch) {
-    note = noteMatch[1].split("\n")[0].trim().slice(0, 30);
-  }
-
-  return { amount, type, note, rawText: text };
-}
-
 export default function App() {
   const [ready, setReady] = useState(false);
   const [credentials, setCredentials] = useState(null);
@@ -202,30 +190,33 @@ export default function App() {
   const [debtMembers, setDebtMembers] = useState(DEFAULT_DEBT_MEMBERS);
   const [tab, setTab] = useState("dashboard");
   const [quickAddModal, setQuickAddModal] = useState(false);
-  const [installEvent, setInstallEvent] = useState(null);
-  const [showInstallBanner, setShowInstallBanner] = useState(false);
-  const [iosInstallHint, setIosInstallHint] = useState(false);
+  const [topUpModalAccount, setTopUpModalAccount] = useState(null);
 
   useEffect(() => {
     (async () => {
-      const [acc, tx, bud, rec, dbt, members, creds] = await Promise.all([
-        loadKey(KEYS.accounts, []),
-        loadKey(KEYS.transactions, []),
-        loadKey(KEYS.budgets, []),
-        loadKey(KEYS.recurring, []),
-        loadKey(KEYS.debts, []),
-        loadKey(KEYS.debtMembers, DEFAULT_DEBT_MEMBERS),
-        loadKey(KEYS.credentials, null),
-      ]);
-      setAccounts(acc);
-      setTransactions(tx);
-      setBudgets(bud);
-      setRecurring(rec);
-      setDebts(dbt);
-      setDebtMembers(members && members.length > 0 ? members : DEFAULT_DEBT_MEMBERS);
-      setCredentials(creds);
-      setUnlocked(sessionStorage.getItem("finance_unlocked") === "1");
-      setReady(true);
+      try {
+        const [acc, tx, bud, rec, dbt, members, creds] = await Promise.all([
+          loadKey(KEYS.accounts, []),
+          loadKey(KEYS.transactions, []),
+          loadKey(KEYS.budgets, []),
+          loadKey(KEYS.recurring, []),
+          loadKey(KEYS.debts, []),
+          loadKey(KEYS.debtMembers, DEFAULT_DEBT_MEMBERS),
+          loadKey(KEYS.credentials, null),
+        ]);
+        setAccounts(Array.isArray(acc) ? acc : []);
+        setTransactions(Array.isArray(tx) ? tx : []);
+        setBudgets(Array.isArray(bud) ? bud : []);
+        setRecurring(Array.isArray(rec) ? rec : []);
+        setDebts(Array.isArray(dbt) ? dbt : []);
+        setDebtMembers(Array.isArray(members) && members.length > 0 ? members : DEFAULT_DEBT_MEMBERS);
+        setCredentials(creds);
+        setUnlocked(sessionStorage.getItem("finance_unlocked") === "1");
+      } catch (err) {
+        console.error("Initialization error:", err);
+      } finally {
+        setReady(true);
+      }
     })();
   }, []);
 
@@ -247,71 +238,31 @@ export default function App() {
       loadKey(KEYS.debtMembers, DEFAULT_DEBT_MEMBERS),
       loadKey(KEYS.credentials, null),
     ]);
-    setAccounts(acc);
-    setTransactions(tx);
-    setBudgets(bud);
-    setRecurring(rec);
-    setDebts(dbt);
-    setDebtMembers(members && members.length > 0 ? members : DEFAULT_DEBT_MEMBERS);
+    setAccounts(Array.isArray(acc) ? acc : []);
+    setTransactions(Array.isArray(tx) ? tx : []);
+    setBudgets(Array.isArray(bud) ? bud : []);
+    setRecurring(Array.isArray(rec) ? rec : []);
+    setDebts(Array.isArray(dbt) ? dbt : []);
+    setDebtMembers(Array.isArray(members) && members.length > 0 ? members : DEFAULT_DEBT_MEMBERS);
     setCredentials(creds);
   }, []);
 
   useEffect(() => {
-    if (!ready) return;
-    const channel = supabase
-      .channel("finance_data_changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "finance_data" }, () => {
-        reloadAll();
-      })
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    if (!ready || !supabase) return;
+    try {
+      const channel = supabase
+        .channel("finance_data_changes")
+        .on("postgres_changes", { event: "*", schema: "public", table: "finance_data" }, () => {
+          reloadAll();
+        })
+        .subscribe();
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    } catch {
+      // non-blocking
+    }
   }, [ready, reloadAll]);
-
-  // PWA install banner
-  useEffect(() => {
-    const isStandalone =
-      window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
-    if (isStandalone) return;
-    if (localStorage.getItem("financeInstallBannerDismissed") === "1") return;
-
-    const onBeforeInstallPrompt = (e) => {
-      e.preventDefault();
-      setInstallEvent(e);
-      setShowInstallBanner(true);
-    };
-    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
-
-    const onInstalled = () => {
-      setShowInstallBanner(false);
-      setIosInstallHint(false);
-      localStorage.setItem("financeInstallBannerDismissed", "1");
-    };
-    window.addEventListener("appinstalled", onInstalled);
-
-    const isIOS = /iphone|ipad|ipod/i.test(window.navigator.userAgent);
-    if (isIOS) setIosInstallHint(true);
-
-    return () => {
-      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
-      window.removeEventListener("appinstalled", onInstalled);
-    };
-  }, []);
-
-  const handleInstallClick = useCallback(async () => {
-    if (!installEvent) return;
-    installEvent.prompt();
-    await installEvent.userChoice;
-    setInstallEvent(null);
-    setShowInstallBanner(false);
-  }, [installEvent]);
-
-  const dismissInstallBanner = useCallback(() => {
-    setShowInstallBanner(false);
-    setIosInstallHint(false);
-    localStorage.setItem("financeInstallBannerDismissed", "1");
-  }, []);
 
   // Transactions
   const addTransaction = (txData) => {
@@ -369,8 +320,8 @@ export default function App() {
 
   // Debts & Members
   const addDebt = (data) => {
-    const cleanPerson = data.person.trim();
-    if (!debtMembers.includes(cleanPerson)) {
+    const cleanPerson = (data.person || "").trim();
+    if (cleanPerson && !debtMembers.includes(cleanPerson)) {
       persistDebtMembers([...debtMembers, cleanPerson]);
     }
     persistDebts([{ id: uid(), date: todayISO(), settled: false, ...data, person: cleanPerson, amount: Math.abs(Number(data.amount) || 0) }, ...debts]);
@@ -379,7 +330,7 @@ export default function App() {
   const deleteDebt = (id) => persistDebts(debts.filter((d) => d.id !== id));
 
   const addDebtMember = (name) => {
-    const clean = name.trim();
+    const clean = (name || "").trim();
     if (!clean || debtMembers.includes(clean)) return;
     persistDebtMembers([...debtMembers, clean]);
   };
@@ -387,17 +338,22 @@ export default function App() {
     persistDebtMembers(debtMembers.filter((m) => m !== name));
   };
   const settleAllWithMember = (person) => {
-    persistDebts(debts.map((d) => (d.person.toLowerCase() === person.toLowerCase() ? { ...d, settled: true } : d)));
+    persistDebts(debts.map((d) => ((d.person || "").toLowerCase() === (person || "").toLowerCase() ? { ...d, settled: true } : d)));
   };
 
-  // Derived summaries
-  const netWorth = round2(accounts.reduce((s, a) => s + a.balance, 0));
+  // Safe calculated numbers
+  const safeAccounts = Array.isArray(accounts) ? accounts : [];
+  const safeTransactions = Array.isArray(transactions) ? transactions : [];
+  const safeDebts = Array.isArray(debts) ? debts : [];
+  const safeRecurring = Array.isArray(recurring) ? recurring : [];
+
+  const netWorth = round2(safeAccounts.reduce((s, a) => s + (Number(a?.balance) || 0), 0));
   const thisMonth = monthKeyOf(todayISO());
-  const monthTx = transactions.filter((t) => monthKeyOf(t.date) === thisMonth);
-  const monthIncome = round2(monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0));
-  const monthExpense = round2(monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0));
-  const owedToMe = round2(debts.filter((d) => d.direction === "owed_to_me" && !d.settled).reduce((s, d) => s + d.amount, 0));
-  const iOwe = round2(debts.filter((d) => d.direction === "i_owe" && !d.settled).reduce((s, d) => s + d.amount, 0));
+  const monthTx = safeTransactions.filter((t) => t && monthKeyOf(t.date) === thisMonth);
+  const monthIncome = round2(monthTx.filter((t) => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0));
+  const monthExpense = round2(monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + (Number(t.amount) || 0), 0));
+  const owedToMe = round2(safeDebts.filter((d) => d && d.direction === "owed_to_me" && !d.settled).reduce((s, d) => s + (Number(d.amount) || 0), 0));
+  const iOwe = round2(safeDebts.filter((d) => d && d.direction === "i_owe" && !d.settled).reduce((s, d) => s + (Number(d.amount) || 0), 0));
 
   if (!ready) return <LoadingScreen />;
   if (!credentials) return <PinSetup onDone={(hash) => persistCredentials({ pinHash: hash })} />;
@@ -414,25 +370,18 @@ export default function App() {
   }
 
   return (
-    <div style={{ background: "#F7F8F5", minHeight: "100vh" }}>
+    <div style={{ background: "#F7F8F5", minHeight: "100vh", position: "relative" }}>
       <GlobalStyle />
-      {(showInstallBanner || iosInstallHint) && (
-        <InstallBanner
-          onInstall={showInstallBanner ? handleInstallClick : null}
-          onDismiss={dismissInstallBanner}
-          ios={!showInstallBanner && iosInstallHint}
-        />
-      )}
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 pb-28 pt-6 sm:pt-8">
-        <Header tab={tab} setTab={setTab} netWorth={netWorth} overdueBills={recurring.filter((r) => r.active && daysUntil(r.nextDue) < 0).length} />
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pb-36 pt-6 sm:pt-8">
+        <Header tab={tab} setTab={setTab} netWorth={netWorth} overdueBills={safeRecurring.filter((r) => r && r.active && daysUntil(r.nextDue) < 0).length} />
 
         {tab === "dashboard" && (
           <DashboardTab
-            accounts={accounts}
-            transactions={transactions}
+            accounts={safeAccounts}
+            transactions={safeTransactions}
             budgets={budgets}
-            recurring={recurring}
-            debts={debts}
+            recurring={safeRecurring}
+            debts={safeDebts}
             netWorth={netWorth}
             monthIncome={monthIncome}
             monthExpense={monthExpense}
@@ -442,12 +391,18 @@ export default function App() {
           />
         )}
         {tab === "accounts" && (
-          <AccountsTab accounts={accounts} addAccount={addAccount} updateAccount={updateAccount} deleteAccount={deleteAccount} />
+          <AccountsTab
+            accounts={safeAccounts}
+            addAccount={addAccount}
+            updateAccount={updateAccount}
+            deleteAccount={deleteAccount}
+            onOpenTopUp={(acc) => setTopUpModalAccount(acc)}
+          />
         )}
         {tab === "transactions" && (
           <TransactionsTab
-            accounts={accounts}
-            transactions={transactions}
+            accounts={safeAccounts}
+            transactions={safeTransactions}
             addTransaction={addTransaction}
             updateTransaction={updateTransaction}
             deleteTransaction={deleteTransaction}
@@ -457,11 +412,11 @@ export default function App() {
           <BudgetsTab budgets={budgets} monthTx={monthTx} upsertBudget={upsertBudget} deleteBudget={deleteBudget} />
         )}
         {tab === "bills" && (
-          <BillsTab accounts={accounts} recurring={recurring} addRecurring={addRecurring} updateRecurring={updateRecurring} deleteRecurring={deleteRecurring} markBillPaid={markBillPaid} />
+          <BillsTab accounts={safeAccounts} recurring={safeRecurring} addRecurring={addRecurring} updateRecurring={updateRecurring} deleteRecurring={deleteRecurring} markBillPaid={markBillPaid} />
         )}
         {tab === "debts" && (
           <DebtsTab
-            debts={debts}
+            debts={safeDebts}
             members={debtMembers}
             owedToMe={owedToMe}
             iOwe={iOwe}
@@ -473,34 +428,56 @@ export default function App() {
             settleAllWithMember={settleAllWithMember}
           />
         )}
-        {tab === "reports" && <ReportsTab transactions={transactions} accounts={accounts} />}
+        {tab === "reports" && <ReportsTab transactions={safeTransactions} accounts={safeAccounts} />}
       </div>
 
-      {/* Floating Action Button for Quick Add on any screen */}
-      <button
-        onClick={() => setQuickAddModal(true)}
-        className="fixed bottom-6 right-6 flex items-center gap-2 px-4 py-3 rounded-full text-white shadow-xl hover:scale-105 transition-all z-40"
-        style={{ background: "#1F2A1D" }}
-      >
-        <Plus size={18} />
-        <span className="text-xs font-bold font-display">Log / Scan Receipt</span>
-      </button>
+      {/* Persistent Floating Action Button */}
+      <div className="fixed bottom-6 right-6 z-50">
+        <button
+          onClick={() => setQuickAddModal(true)}
+          className="flex items-center gap-2 px-5 py-3.5 rounded-full text-white shadow-2xl transition-all hover:scale-105 active:scale-95"
+          style={{ background: "#1F2A1D", boxShadow: "0 10px 25px rgba(31,42,29,0.35)" }}
+        >
+          <Camera size={18} className="text-emerald-400" />
+          <span className="text-xs font-bold font-display uppercase tracking-wider">Log / Scan Receipt</span>
+        </button>
+      </div>
 
-      {/* Global Quick Add Modal with OCR Scanner */}
+      {/* Quick Add Modal with OCR Scanner */}
       {quickAddModal && (
         <QuickAddModal
-          accounts={accounts}
+          accounts={safeAccounts}
           members={debtMembers}
           onClose={() => setQuickAddModal(false)}
           onAddTx={addTransaction}
           onAddDebt={addDebt}
         />
       )}
+
+      {/* Direct Top-Up Wallet Modal */}
+      {topUpModalAccount && (
+        <TopUpModal
+          walletAccount={topUpModalAccount}
+          accounts={safeAccounts}
+          onClose={() => setTopUpModalAccount(null)}
+          onConfirmTopUp={(fromAccId, amt, note) => {
+            addTransaction({
+              accountId: fromAccId,
+              toAccountId: topUpModalAccount.id,
+              type: "transfer",
+              amount: amt,
+              note: note || `Top-up ${topUpModalAccount.name}`,
+              date: todayISO(),
+            });
+            setTopUpModalAccount(null);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-// ---- chrome & utility elements -------------------------------------------
+// ---- Shell & Gate Components ---------------------------------------------
 
 function LoadingScreen() {
   return (
@@ -600,45 +577,12 @@ function PinUnlock({ credentials, onUnlock }) {
   );
 }
 
-function InstallBanner({ onInstall, onDismiss, ios }) {
-  return (
-    <div
-      style={{
-        position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 999,
-        maxWidth: 420, margin: "0 auto",
-        background: "#1F2A1D", color: "#F7F8F5", borderRadius: 14,
-        padding: "12px 14px", boxShadow: "0 10px 30px rgba(31,42,29,0.35)",
-        display: "flex", alignItems: "center", gap: 10,
-      }}
-    >
-      <div style={{ width: 30, height: 30, borderRadius: 8, background: "#4C8B5C", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        {ios ? <Share size={15} color="#F7F8F5" /> : <Download size={15} color="#F7F8F5" />}
-      </div>
-      <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.35 }}>
-        {ios ? (
-          <>Install this app: tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>.</>
-        ) : (
-          <>Install Money Manager for quick access and offline use.</>
-        )}
-      </div>
-      {onInstall && (
-        <button onClick={onInstall} style={{ background: "#4C8B5C", color: "#F7F8F5", fontSize: 12, fontWeight: 700, borderRadius: 8, padding: "7px 12px", flexShrink: 0 }}>
-          Install
-        </button>
-      )}
-      <button onClick={onDismiss} style={{ color: "#B4BAAD", flexShrink: 0 }}>
-        <X size={15} />
-      </button>
-    </div>
-  );
-}
-
 function Header({ tab, setTab, netWorth, overdueBills }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "transactions", label: "Transactions", icon: List },
-    { id: "debts", label: "Debts", icon: HandCoins },
     { id: "accounts", label: "Accounts", icon: Wallet },
+    { id: "debts", label: "Debts", icon: HandCoins },
     { id: "budgets", label: "Budgets", icon: Target },
     { id: "bills", label: "Bills", icon: Repeat, badge: overdueBills },
     { id: "reports", label: "Reports", icon: TrendingUp },
@@ -730,83 +674,17 @@ function ProgressBar({ pct, color }) {
   );
 }
 
-// ---- Receipt OCR Uploader Component ---------------------------------------
-
-function ReceiptUploader({ accounts, onParsedData }) {
-  const [loading, setLoading] = useState(false);
-
-  const processFile = async (file) => {
-    if (!file) return;
-    setLoading(true);
-    try {
-      const data = await parseScreenshotWithOCR(file);
-      onParsedData(data);
-    } catch (err) {
-      alert("Could not automatically parse screenshot. Please type details manually.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePaste = (e) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (const item of items) {
-      if (item.type.startsWith("image/")) {
-        const file = item.getAsFile();
-        processFile(file);
-        break;
-      }
-    }
-  };
-
-  return (
-    <div
-      onPaste={handlePaste}
-      tabIndex={0}
-      className="border-2 border-dashed border-slate-200 rounded-xl p-3 text-center bg-slate-50 hover:bg-slate-100/70 transition-all focus:outline-none focus:border-emerald-600"
-    >
-      <input
-        type="file"
-        accept="image/*"
-        id="ss-input"
-        className="hidden"
-        onChange={(e) => {
-          if (e.target.files?.[0]) processFile(e.target.files[0]);
-        }}
-      />
-      <label htmlFor="ss-input" className="cursor-pointer flex flex-col items-center gap-1">
-        {loading ? (
-          <div className="flex items-center gap-2 py-2 text-emerald-700 font-semibold text-xs">
-            <Loader2 className="animate-spin" size={16} />
-            <span>Scanning receipt with OCR…</span>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center gap-1.5 text-emerald-700 bg-emerald-100/70 px-2.5 py-0.5 rounded-full text-[11px] font-bold">
-              <Sparkles size={12} />
-              <span>Smart Screenshot OCR</span>
-            </div>
-            <p className="text-xs text-slate-600 font-medium">
-              Click to upload or <strong>Paste (Ctrl+V)</strong> payment screenshot
-            </p>
-            <span className="text-[10.5px] text-slate-400">Auto-detects Amount, Mode & Matching Wallet</span>
-          </>
-        )}
-      </label>
-    </div>
-  );
-}
-
-// ---- Global Quick Add Modal ----------------------------------------------
+// ---- Quick Add Modal -----------------------------------------------------
 
 function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
-  const [mode, setMode] = useState("tx"); // 'tx' or 'debt'
+  const safeAccounts = Array.isArray(accounts) ? accounts : [];
+  const safeMembers = Array.isArray(members) ? members : [];
+  const [mode, setMode] = useState("tx");
   const [txType, setTxType] = useState("expense");
   const [debtDir, setDebtDir] = useState("owed_to_me");
   const [amount, setAmount] = useState("");
-  const [person, setPerson] = useState(members[0] || "");
-  const [accountId, setAccountId] = useState(accounts[0]?.id || "");
+  const [person, setPerson] = useState(safeMembers[0] || "");
+  const [accountId, setAccountId] = useState(safeAccounts[0]?.id || "");
   const [category, setCategory] = useState("Food");
   const [note, setNote] = useState("");
 
@@ -817,7 +695,7 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
 
     const lower = (data.rawText || "").toLowerCase();
 
-    // Auto-match category based on merchants
+    // Auto-match Category
     if (/swiggy|zomato|chai|tea|restaurant|baker|cafe|dhaba/i.test(lower)) {
       setCategory("Food");
     } else if (/uber|ola|rapido|metro|petrol|diesel|fuel|fastag/i.test(lower)) {
@@ -828,16 +706,31 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
       setCategory("Utilities");
     }
 
-    // Auto-match Account or Top-up Wallet from screenshot
-    if (data.rawText && accounts.length > 0) {
-      const directMatch = accounts.find((a) => lower.includes(a.name.toLowerCase()));
+    // Auto-match Member for Debt
+    const matchedMember = safeMembers.find((m) => lower.includes(m.toLowerCase()));
+    if (matchedMember) {
+      setPerson(matchedMember);
+    }
+
+    // Auto-match Bank or Wallet account[span_27](start_span)[span_27](end_span)[span_28](start_span)[span_28](end_span)[span_29](start_span)[span_29](end_span)
+    if (data.rawText && safeAccounts.length > 0) {
+      const directMatch = safeAccounts.find((a) => a && lower.includes((a.name || "").toLowerCase()));
       if (directMatch) {
         setAccountId(directMatch.id);
       } else {
-        const isWallet = /paytm wallet|phonepe wallet|amazon pay|metro card|top-up|wallet/i.test(lower);
-        if (isWallet) {
-          const walletAcc = accounts.find((a) => a.type === "wallet" || /wallet|metro/i.test(a.name));
-          if (walletAcc) setAccountId(walletAcc.id);
+        const isBankMatch = safeAccounts.find((a) => 
+          a && (
+            (/baroda/i.test(lower) && /baroda/i.test(a.name)) ||
+            (/kotak/i.test(lower) && /kotak/i.test(a.name)) ||
+            (/navi/i.test(lower) && /navi/i.test(a.name)) ||
+            (/paytm/i.test(lower) && /paytm/i.test(a.name))
+          )
+        );
+        if (isBankMatch) {
+          setAccountId(isBankMatch.id);
+        } else {
+          const walletAcc = safeAccounts.find((a) => a && (a.type === "wallet" || /wallet|metro/i.test(a.name)));
+          if (walletAcc && /wallet|metro|top-up/i.test(lower)) setAccountId(walletAcc.id);
         }
       }
     }
@@ -871,23 +764,21 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
     >
       <div
         onClick={(e) => e.stopPropagation()}
         className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-slate-100 max-h-[90vh] overflow-y-auto"
       >
         <div className="flex items-center justify-between mb-3">
-          <span className="font-display font-bold text-base text-slate-900">Quick Log</span>
+          <span className="font-display font-bold text-base text-slate-900">Log / Scan Receipt</span>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
         </div>
 
-        {/* Screenshot Uploader Component */}
         <div className="mb-3">
-          <ReceiptUploader accounts={accounts} onParsedData={handleParsedData} />
+          <ReceiptUploader accounts={safeAccounts} onParsedData={handleParsedData} />
         </div>
 
-        {/* Tab switcher: Transaction vs Debt */}
         <div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-3">
           <button
             onClick={() => setMode("tx")}
@@ -922,7 +813,7 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
             <div>
               <label className="text-[11px] font-semibold text-slate-500 block mb-1">Account / Top-Up Wallet</label>
               <FieldSelect value={accountId} onChange={(e) => setAccountId(e.target.value)} style={{ width: "100%" }}>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.type})</option>)}
+                {safeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({accountTypeInfo(a.type).label})</option>)}
               </FieldSelect>
             </div>
             <div>
@@ -951,7 +842,7 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
               </button>
             </div>
             <div className="flex gap-1.5 overflow-x-auto pb-1">
-              {members.map((m) => (
+              {safeMembers.map((m) => (
                 <button
                   key={m}
                   onClick={() => setPerson(m)}
@@ -1011,13 +902,454 @@ function QuickAddModal({ accounts, members, onClose, onAddTx, onAddDebt }) {
   );
 }
 
-// ---- Dashboard -----------------------------------------------------------
+// ---- Direct Top-Up Wallet Modal ------------------------------------------
 
-function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, monthIncome, monthExpense, owedToMe, iOwe, setTab }) {
+function TopUpModal({ walletAccount, accounts, onClose, onConfirmTopUp }) {
+  const safeAccounts = Array.isArray(accounts) ? accounts : [];
+  const bankAccounts = safeAccounts.filter((a) => a && a.id !== walletAccount.id);
+  const [fromAccountId, setFromAccountId] = useState(bankAccounts[0]?.id || "");
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState(`Recharge ${walletAccount.name}`);
+
+  const handleTopUp = () => {
+    if (!amount || !fromAccountId) return;
+    onConfirmTopUp(fromAccountId, Number(amount), note);
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-slate-100 space-y-3"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
+              <Wallet size={16} />
+            </div>
+            <span className="font-display font-bold text-sm text-slate-800">Top-Up {walletAccount.name}</span>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
+        </div>
+
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 block mb-1">Deduct from Bank Account</label>
+          <FieldSelect value={fromAccountId} onChange={(e) => setFromAccountId(e.target.value)} style={{ width: "100%" }}>
+            {bankAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({money(a.balance)})</option>)}
+          </FieldSelect>
+        </div>
+
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 block mb-1">Top-Up Amount (₹)</label>
+          <FieldInput
+            type="number"
+            placeholder="Amount"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            style={{ width: "100%", fontSize: 16, fontWeight: 700 }}
+          />
+        </div>
+
+        <div className="flex gap-1.5">
+          {[200, 500, 1000, 2000].map((v) => (
+            <button
+              key={v}
+              onClick={() => setAmount(String(v))}
+              className="flex-1 py-1 rounded bg-slate-100 text-slate-700 text-xs font-bold"
+            >
+              +₹{v}
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={handleTopUp}
+          className="w-full mt-2 bg-amber-600 hover:bg-amber-700 text-white py-2.5 rounded-lg text-xs font-bold font-display"
+        >
+          Confirm Top-Up (Transfer)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---- Accounts Tab --------------------------------------------------------
+
+function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount, onOpenTopUp }) {
+  const safeAccounts = Array.isArray(accounts) ? accounts : [];
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: "", type: "wallet", balance: 0 });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+
+  const submitAdd = () => {
+    if (!form.name.trim()) return;
+    addAccount({ name: form.name.trim(), type: form.type, balance: round2(Number(form.balance) || 0) });
+    setForm({ name: "", type: "wallet", balance: 0 });
+    setAdding(false);
+  };
+  const startEdit = (a) => { setEditingId(a.id); setEditForm({ ...a }); };
+  const saveEdit = () => {
+    if (!editForm.name.trim()) return;
+    updateAccount(editingId, { name: editForm.name.trim(), type: editForm.type, balance: round2(Number(editForm.balance) || 0) });
+    setEditingId(null);
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Accounts & Wallets</div>
+        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
+          <Plus size={14} /> Add account
+        </button>
+      </div>
+
+      {adding && (
+        <Card>
+          <div className="grid sm:grid-cols-3 gap-2">
+            <FieldInput placeholder="Name (e.g. Paytm Wallet, Metro Card)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            <FieldSelect value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+              {ACCOUNT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </FieldSelect>
+            <FieldInput type="number" step="0.01" placeholder="Starting balance" value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} />
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button onClick={submitAdd} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
+            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>Cancel</button>
+          </div>
+        </Card>
+      )}
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {safeAccounts.length === 0 && !adding && <EmptyState icon={Wallet} text="No accounts yet — add one to get started." />}
+        {safeAccounts.map((a) => {
+          if (!a) return null;
+          const t = accountTypeInfo(a.type);
+          const Icon = t.icon;
+          const isEditing = editingId === a.id;
+          if (isEditing) {
+            return (
+              <Card key={a.id}>
+                <div className="flex flex-col gap-2">
+                  <FieldInput value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+                  <FieldSelect value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
+                    {ACCOUNT_TYPES.map((ty) => <option key={ty.id} value={ty.id}>{ty.label}</option>)}
+                  </FieldSelect>
+                  <FieldInput type="number" step="0.01" value={editForm.balance} onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })} />
+                  <div className="flex gap-2">
+                    <button onClick={saveEdit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
+                    <button onClick={() => setEditingId(null)} style={{ color: "#8A9186", fontSize: 12.5 }}>Cancel</button>
+                  </div>
+                </div>
+              </Card>
+            );
+          }
+          return (
+            <Card key={a.id} style={{ position: "relative" }} className="card-hover">
+              <div className="flex items-center gap-3 mb-2">
+                <div style={{ width: 34, height: 34, borderRadius: 9, background: t.color + "1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Icon size={16} color={t.color} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{a.name}</div>
+                  <div style={{ fontSize: 11, color: "#8A9186" }}>{t.label}</div>
+                </div>
+              </div>
+              <div className="font-display" style={{ fontSize: 20, fontWeight: 700, color: a.balance < 0 ? "#C05C4A" : "#1F2A1D", marginBottom: 8 }}>
+                {money(a.balance)}
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2 mt-2">
+                {a.type === "wallet" ? (
+                  <button
+                    onClick={() => onOpenTopUp(a)}
+                    className="flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 px-2.5 py-1 rounded"
+                  >
+                    <RefreshCw size={12} /> + Top-Up
+                  </button>
+                ) : <span />}
+                <div className="flex gap-1">
+                  <button onClick={() => startEdit(a)} style={{ color: "#8A9186", padding: 4 }}><Pencil size={13} /></button>
+                  <button onClick={() => deleteAccount(a.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---- Transactions Tab ----------------------------------------------------
+
+function TransactionsTab({ accounts, transactions, addTransaction, updateTransaction, deleteTransaction }) {
+  const safeAccounts = Array.isArray(accounts) ? accounts : [];
+  const safeTransactions = Array.isArray(transactions) ? transactions : [];
+
+  const [type, setType] = useState("expense");
+  const [form, setForm] = useState({ accountId: "", toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
+  const [search, setSearch] = useState("");
+  const [filterAccount, setFilterAccount] = useState("all");
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+
+  const cats = type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+
+  const quickPresets = [
+    { label: "Chai / Snacks", category: "Food", amount: "50" },
+    { label: "Metro / Auto", category: "Transport", amount: "60" },
+    { label: "Lunch / Dinner", category: "Food", amount: "250" },
+    { label: "Groceries", category: "Shopping", amount: "500" },
+  ];
+
+  const submit = () => {
+    if (!form.accountId || !form.amount) return;
+    if (type === "transfer" && (!form.toAccountId || form.toAccountId === form.accountId)) return;
+    addTransaction({
+      accountId: form.accountId,
+      toAccountId: type === "transfer" ? form.toAccountId : undefined,
+      type,
+      category: type === "transfer" ? undefined : (form.category || cats[0].name),
+      amount: form.amount,
+      note: form.note.trim(),
+      date: form.date || todayISO(),
+    });
+    setForm({ accountId: form.accountId, toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
+  };
+
+  const startEdit = (t) => { setEditingId(t.id); setEditForm({ ...t, amount: t.amount }); };
+  const saveEdit = (oldTx) => {
+    updateTransaction(oldTx, {
+      accountId: editForm.accountId,
+      toAccountId: editForm.type === "transfer" ? editForm.toAccountId : undefined,
+      type: editForm.type,
+      category: editForm.type === "transfer" ? undefined : editForm.category,
+      amount: editForm.amount,
+      note: editForm.note,
+      date: editForm.date,
+    });
+    setEditingId(null);
+  };
+
+  const visible = useMemo(() => {
+    return safeTransactions
+      .filter((t) => t && (filterAccount === "all" || t.accountId === filterAccount || t.toAccountId === filterAccount))
+      .filter((t) => filterCategory === "all" || t.category === filterCategory)
+      .filter((t) => {
+        if (!search.trim()) return true;
+        const q = search.toLowerCase();
+        return (t.note || "").toLowerCase().includes(q) || (t.category || "").toLowerCase().includes(q);
+      });
+  }, [safeTransactions, filterAccount, filterCategory, search]);
+
+  const visibleExpenseTotal = round2(visible.filter((t) => t.type === "expense").reduce((s, t) => s + (Number(t.amount) || 0), 0));
+  const visibleIncomeTotal = round2(visible.filter((t) => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0));
+
+  if (safeAccounts.length === 0) {
+    return <EmptyState icon={List} text="Add an account first, then you can log transactions." />;
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card>
+        <div className="flex gap-2 mb-3">
+          {[
+            { id: "expense", label: "Expense", icon: ArrowDownRight, color: "#C05C4A" },
+            { id: "income", label: "Income / Top-Up", icon: ArrowUpRight, color: "#4C8B5C" },
+            { id: "transfer", label: "Transfer (Top-up Wallet)", icon: ArrowRightLeft, color: "#4A7FB5" },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => { setType(opt.id); setForm({ ...form, category: "" }); }}
+              className="flex items-center gap-1.5"
+              style={{ background: type === opt.id ? opt.color : "#F7F8F5", color: type === opt.id ? "#fff" : "#4A5247", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
+            >
+              <opt.icon size={13} /> {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {type === "expense" && (
+          <div className="flex items-center gap-1.5 mb-2.5 overflow-x-auto pb-1">
+            <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Quick:</span>
+            {quickPresets.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => setForm({ ...form, category: p.category, amount: p.amount, note: p.label })}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded text-xs font-semibold flex-shrink-0"
+              >
+                {p.label} (₹{p.amount})
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="grid sm:grid-cols-2 gap-2 mb-2">
+          <FieldSelect value={form.accountId || (safeAccounts[0]?.id ?? "")} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
+            <option value="">{type === "transfer" ? "From Bank Account" : "Account / Top-Up Wallet"}</option>
+            {safeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({accountTypeInfo(a.type).label})</option>)}
+          </FieldSelect>
+          {type === "transfer" ? (
+            <FieldSelect value={form.toAccountId} onChange={(e) => setForm({ ...form, toAccountId: e.target.value })}>
+              <option value="">To Top-Up Wallet / Target Account</option>
+              {safeAccounts.filter((a) => a.id !== (form.accountId || safeAccounts[0]?.id)).map((a) => (
+                <option key={a.id} value={a.id}>{a.name} ({accountTypeInfo(a.type).label})</option>
+              ))}
+            </FieldSelect>
+          ) : (
+            <FieldSelect value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+              <option value="">Category</option>
+              {cats.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </FieldSelect>
+          )}
+        </div>
+        <div className="grid sm:grid-cols-3 gap-2 mb-3">
+          <FieldInput type="number" step="0.01" placeholder="Amount (₹)" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+          <FieldInput placeholder="Note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          <FieldInput type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+        </div>
+        <button onClick={submit} style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
+          Add {type}
+        </button>
+      </Card>
+
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2 flex-1 max-w-sm">
+          <div className="relative w-full">
+            <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search note or category..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-800"
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <FieldSelect value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} style={{ width: 140, fontSize: 12 }}>
+            <option value="all">All categories</option>
+            <optgroup label="Expense">
+              {EXPENSE_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </optgroup>
+            <optgroup label="Income">
+              {INCOME_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </optgroup>
+          </FieldSelect>
+          <FieldSelect value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)} style={{ width: 130, fontSize: 12 }}>
+            <option value="all">All accounts</option>
+            {safeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </FieldSelect>
+          <button
+            onClick={() => exportTransactionsToCSV(safeTransactions, safeAccounts)}
+            title="Export CSV"
+            className="p-2 border border-slate-200 bg-white rounded-lg hover:bg-slate-50 text-slate-700"
+          >
+            <Download size={14} />
+          </button>
+        </div>
+      </div>
+
+      {(filterAccount !== "all" || filterCategory !== "all" || search) && (
+        <Card style={{ padding: "10px 14px" }}>
+          <div className="flex items-center gap-4 flex-wrap" style={{ fontSize: 12 }}>
+            <span style={{ color: "#8A9186" }}>
+              {visible.length} matches
+            </span>
+            {visibleExpenseTotal > 0 && <span style={{ color: "#C05C4A", fontWeight: 700 }}>Spent: {money(visibleExpenseTotal)}</span>}
+            {visibleIncomeTotal > 0 && <span style={{ color: "#4C8B5C", fontWeight: 700 }}>Received: {money(visibleIncomeTotal)}</span>}
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        {visible.length === 0 ? (
+          <EmptyState icon={List} text="No transactions match your search." />
+        ) : (
+          <div className="flex flex-col gap-3">
+            {visible.map((t) =>
+              editingId === t.id ? (
+                <div key={t.id} style={{ borderTop: "1px solid #E7E9E2", paddingTop: 10 }}>
+                  <div className="grid sm:grid-cols-2 gap-2 mb-2">
+                    <FieldSelect value={editForm.accountId} onChange={(e) => setEditForm({ ...editForm, accountId: e.target.value })}>
+                      {safeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </FieldSelect>
+                    {editForm.type === "transfer" ? (
+                      <FieldSelect value={editForm.toAccountId} onChange={(e) => setEditForm({ ...editForm, toAccountId: e.target.value })}>
+                        {safeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </FieldSelect>
+                    ) : (
+                      <FieldSelect value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}>
+                        {(editForm.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                      </FieldSelect>
+                    )}
+                  </div>
+                  <div className="grid sm:grid-cols-3 gap-2 mb-2">
+                    <FieldInput type="number" step="0.01" value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} />
+                    <FieldInput value={editForm.note} onChange={(e) => setEditForm({ ...editForm, note: e.target.value })} />
+                    <FieldInput type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => saveEdit(t)} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
+                    <button onClick={() => setEditingId(null)} style={{ color: "#8A9186", fontSize: 12.5 }}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <TxRow key={t.id} tx={t} accounts={safeAccounts} onEdit={startEdit} onDelete={deleteTransaction} />
+              )
+            )}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function TxRow({ tx, accounts, compact, onEdit, onDelete }) {
+  const isTransfer = tx.type === "transfer";
+  const c = isTransfer ? null : catInfo(tx.category, tx.type);
+  const Icon = isTransfer ? ArrowRightLeft : c.icon;
+  const accName = (id) => accounts.find((a) => a && a.id === id)?.name || "Deleted account";
+  const color = isTransfer ? "#8A9186" : tx.type === "income" ? "#4C8B5C" : "#C05C4A";
+  return (
+    <div className="flex items-center gap-3">
+      <div style={{ width: 30, height: 30, borderRadius: 8, background: (isTransfer ? "#8A9186" : c.color) + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Icon size={14} color={isTransfer ? "#8A9186" : c.color} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, color: "#1F2A1D", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {tx.note || (isTransfer ? "Transfer" : tx.category)}
+        </div>
+        <div style={{ fontSize: 11, color: "#8A9186" }}>
+          {isTransfer ? `${accName(tx.accountId)} → ${accName(tx.toAccountId)}` : accName(tx.accountId)} · {fmtDateShort(tx.date)}
+        </div>
+      </div>
+      <div style={{ fontSize: 13.5, fontWeight: 700, color, flexShrink: 0 }}>
+        {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{money(tx.amount).replace("-", "")}
+      </div>
+      {!compact && (
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button onClick={() => onEdit(tx)} style={{ color: "#8A9186", padding: 4 }}><Pencil size={13} /></button>
+          <button onClick={() => onDelete(tx)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Dashboard Tab -------------------------------------------------------
+
+function DashboardTab({ accounts, transactions, budgets, recurring, debts, netWorth, monthIncome, monthExpense, owedToMe, iOwe, setTab }) {
   const upcoming = recurring
-    .filter((r) => r.active)
+    .filter((r) => r && r.active)
     .slice()
-    .sort((a, b) => a.nextDue.localeCompare(b.nextDue))
+    .sort((a, b) => (a.nextDue || "").localeCompare(b.nextDue || ""))
     .slice(0, 5);
   const recent = transactions.slice(0, 6);
   const netThisMonth = round2(monthIncome - monthExpense);
@@ -1025,7 +1357,7 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
   const budgetRows = budgets
     .map((b) => {
       const spent = round2(
-        transactions.filter((t) => t.type === "expense" && t.category === b.category && monthKeyOf(t.date) === monthKeyOf(todayISO())).reduce((s, t) => s + t.amount, 0)
+        transactions.filter((t) => t && t.type === "expense" && t.category === b.category && monthKeyOf(t.date) === monthKeyOf(todayISO())).reduce((s, t) => s + (Number(t.amount) || 0), 0)
       );
       return { ...b, spent, pct: b.limit > 0 ? (spent / b.limit) * 100 : 0 };
     })
@@ -1121,930 +1453,12 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
   );
 }
 
-function TxRow({ tx, accounts, compact, onEdit, onDelete }) {
-  const isTransfer = tx.type === "transfer";
-  const c = isTransfer ? null : catInfo(tx.category, tx.type);
-  const Icon = isTransfer ? ArrowRightLeft : c.icon;
-  const accName = (id) => accounts.find((a) => a.id === id)?.name || "Deleted account";
-  const color = isTransfer ? "#8A9186" : tx.type === "income" ? "#4C8B5C" : "#C05C4A";
-  return (
-    <div className="flex items-center gap-3">
-      <div style={{ width: 30, height: 30, borderRadius: 8, background: (isTransfer ? "#8A9186" : c.color) + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <Icon size={14} color={isTransfer ? "#8A9186" : c.color} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, color: "#1F2A1D", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {tx.note || (isTransfer ? "Transfer" : tx.category)}
-        </div>
-        <div style={{ fontSize: 11, color: "#8A9186" }}>
-          {isTransfer ? `${accName(tx.accountId)} → ${accName(tx.toAccountId)}` : accName(tx.accountId)} · {fmtDateShort(tx.date)}
-        </div>
-      </div>
-      <div style={{ fontSize: 13.5, fontWeight: 700, color, flexShrink: 0 }}>
-        {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{money(tx.amount).replace("-", "")}
-      </div>
-      {!compact && (
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={() => onEdit(tx)} style={{ color: "#8A9186", padding: 4 }}><Pencil size={13} /></button>
-          <button onClick={() => onDelete(tx)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- Accounts --------------------------------------------------------
-
-function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ name: "", type: "cash", balance: 0 });
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState(null);
-
-  const submitAdd = () => {
-    if (!form.name.trim()) return;
-    addAccount({ name: form.name.trim(), type: form.type, balance: round2(Number(form.balance) || 0) });
-    setForm({ name: "", type: "cash", balance: 0 });
-    setAdding(false);
-  };
-  const startEdit = (a) => { setEditingId(a.id); setEditForm({ ...a }); };
-  const saveEdit = () => {
-    if (!editForm.name.trim()) return;
-    updateAccount(editingId, { name: editForm.name.trim(), type: editForm.type, balance: round2(Number(editForm.balance) || 0) });
-    setEditingId(null);
-  };
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Accounts & Top-Up Wallets</div>
-        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
-          <Plus size={14} /> Add account
-        </button>
-      </div>
-
-      {adding && (
-        <Card>
-          <div className="grid sm:grid-cols-3 gap-2">
-            <FieldInput placeholder="Account name (e.g. Paytm, Metro Card)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            <FieldSelect value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              {ACCOUNT_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-            </FieldSelect>
-            <FieldInput type="number" step="0.01" placeholder="Starting balance" value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} />
-          </div>
-          <div className="flex gap-2 mt-3">
-            <button onClick={submitAdd} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
-            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>Cancel</button>
-          </div>
-        </Card>
-      )}
-
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {accounts.length === 0 && !adding && <EmptyState icon={Wallet} text="No accounts yet — add one to get started." />}
-        {accounts.map((a) => {
-          const t = accountTypeInfo(a.type);
-          const Icon = t.icon;
-          const isEditing = editingId === a.id;
-          if (isEditing) {
-            return (
-              <Card key={a.id}>
-                <div className="flex flex-col gap-2">
-                  <FieldInput value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
-                  <FieldSelect value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}>
-                    {ACCOUNT_TYPES.map((ty) => <option key={ty.id} value={ty.id}>{ty.label}</option>)}
-                  </FieldSelect>
-                  <FieldInput type="number" step="0.01" value={editForm.balance} onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })} />
-                  <div className="flex gap-2">
-                    <button onClick={saveEdit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
-                    <button onClick={() => setEditingId(null)} style={{ color: "#8A9186", fontSize: 12.5 }}>Cancel</button>
-                  </div>
-                </div>
-              </Card>
-            );
-          }
-          return (
-            <Card key={a.id} style={{ position: "relative" }} className="card-hover">
-              <div className="flex items-center gap-3 mb-3">
-                <div style={{ width: 34, height: 34, borderRadius: 9, background: t.color + "1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Icon size={16} color={t.color} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{a.name}</div>
-                  <div style={{ fontSize: 11, color: "#8A9186" }}>{t.label}</div>
-                </div>
-              </div>
-              <div className="font-display" style={{ fontSize: 20, fontWeight: 700, color: a.balance < 0 ? "#C05C4A" : "#1F2A1D", marginBottom: 8 }}>
-                {money(a.balance)}
-              </div>
-              <div className="flex gap-1">
-                <button onClick={() => startEdit(a)} style={{ color: "#8A9186", padding: 4 }}><Pencil size={13} /></button>
-                <button onClick={() => deleteAccount(a.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ---- Transactions ------------------------------------------------------
-
-function TransactionsTab({ accounts, transactions, addTransaction, updateTransaction, deleteTransaction }) {
-  const [type, setType] = useState("expense");
-  const [form, setForm] = useState({ accountId: "", toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
-  const [search, setSearch] = useState("");
-  const [filterAccount, setFilterAccount] = useState("all");
-  const [filterCategory, setFilterCategory] = useState("all");
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState(null);
-
-  const cats = type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
-
-  const quickPresets = [
-    { label: "Chai / Snacks", category: "Food", amount: "50" },
-    { label: "Metro / Auto", category: "Transport", amount: "60" },
-    { label: "Lunch / Dinner", category: "Food", amount: "250" },
-    { label: "Groceries", category: "Shopping", amount: "500" },
-  ];
-
-  const submit = () => {
-    if (!form.accountId || !form.amount) return;
-    if (type === "transfer" && (!form.toAccountId || form.toAccountId === form.accountId)) return;
-    addTransaction({
-      accountId: form.accountId,
-      toAccountId: type === "transfer" ? form.toAccountId : undefined,
-      type,
-      category: type === "transfer" ? undefined : (form.category || cats[0].name),
-      amount: form.amount,
-      note: form.note.trim(),
-      date: form.date || todayISO(),
-    });
-    setForm({ accountId: form.accountId, toAccountId: "", category: "", amount: "", note: "", date: todayISO() });
-  };
-
-  const startEdit = (t) => { setEditingId(t.id); setEditForm({ ...t, amount: t.amount }); };
-  const saveEdit = (oldTx) => {
-    updateTransaction(oldTx, {
-      accountId: editForm.accountId,
-      toAccountId: editForm.type === "transfer" ? editForm.toAccountId : undefined,
-      type: editForm.type,
-      category: editForm.type === "transfer" ? undefined : editForm.category,
-      amount: editForm.amount,
-      note: editForm.note,
-      date: editForm.date,
-    });
-    setEditingId(null);
-  };
-
-  const visible = useMemo(() => {
-    return transactions
-      .filter((t) => filterAccount === "all" || t.accountId === filterAccount || t.toAccountId === filterAccount)
-      .filter((t) => filterCategory === "all" || t.category === filterCategory)
-      .filter((t) => {
-        if (!search.trim()) return true;
-        const q = search.toLowerCase();
-        return (t.note || "").toLowerCase().includes(q) || (t.category || "").toLowerCase().includes(q);
-      });
-  }, [transactions, filterAccount, filterCategory, search]);
-
-  const visibleExpenseTotal = round2(visible.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0));
-  const visibleIncomeTotal = round2(visible.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0));
-
-  if (accounts.length === 0) {
-    return <EmptyState icon={List} text="Add an account first, then you can log transactions." />;
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <Card>
-        <div className="flex gap-2 mb-3">
-          {[
-            { id: "expense", label: "Expense", icon: ArrowDownRight, color: "#C05C4A" },
-            { id: "income", label: "Income / Top-Up", icon: ArrowUpRight, color: "#4C8B5C" },
-            { id: "transfer", label: "Transfer (Top-up Wallet)", icon: ArrowRightLeft, color: "#4A7FB5" },
-          ].map((opt) => (
-            <button
-              key={opt.id}
-              onClick={() => { setType(opt.id); setForm({ ...form, category: "" }); }}
-              className="flex items-center gap-1.5"
-              style={{ background: type === opt.id ? opt.color : "#F7F8F5", color: type === opt.id ? "#fff" : "#4A5247", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
-            >
-              <opt.icon size={13} /> {opt.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Quick Tag Presets */}
-        {type === "expense" && (
-          <div className="flex items-center gap-1.5 mb-2.5 overflow-x-auto pb-1">
-            <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Quick:</span>
-            {quickPresets.map((p) => (
-              <button
-                key={p.label}
-                type="button"
-                onClick={() => setForm({ ...form, category: p.category, amount: p.amount, note: p.label })}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded text-xs font-semibold flex-shrink-0"
-              >
-                {p.label} (₹{p.amount})
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="grid sm:grid-cols-2 gap-2 mb-2">
-          <FieldSelect value={form.accountId || (accounts[0]?.id ?? "")} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
-            <option value="">{type === "transfer" ? "From Bank Account" : "Account / Top-Up Wallet"}</option>
-            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.type})</option>)}
-          </FieldSelect>
-          {type === "transfer" ? (
-            <FieldSelect value={form.toAccountId} onChange={(e) => setForm({ ...form, toAccountId: e.target.value })}>
-              <option value="">To Top-Up Wallet / Target Account</option>
-              {accounts.filter((a) => a.id !== (form.accountId || accounts[0]?.id)).map((a) => (
-                <option key={a.id} value={a.id}>{a.name} ({a.type})</option>
-              ))}
-            </FieldSelect>
-          ) : (
-            <FieldSelect value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-              <option value="">Category</option>
-              {cats.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-            </FieldSelect>
-          )}
-        </div>
-        <div className="grid sm:grid-cols-3 gap-2 mb-3">
-          <FieldInput type="number" step="0.01" placeholder="Amount (₹)" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
-          <FieldInput placeholder="Note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-          <FieldInput type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-        </div>
-        <button onClick={submit} style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
-          Add {type}
-        </button>
-      </Card>
-
-      {/* Filter and Search Bar */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2 flex-1 max-w-sm">
-          <div className="relative w-full">
-            <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search note or category..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-800"
-            />
-          </div>
-        </div>
-
-        <div className="flex gap-2">
-          <FieldSelect value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} style={{ width: 140, fontSize: 12 }}>
-            <option value="all">All categories</option>
-            <optgroup label="Expense">
-              {EXPENSE_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-            </optgroup>
-            <optgroup label="Income">
-              {INCOME_CATEGORIES.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-            </optgroup>
-          </FieldSelect>
-          <FieldSelect value={filterAccount} onChange={(e) => setFilterAccount(e.target.value)} style={{ width: 130, fontSize: 12 }}>
-            <option value="all">All accounts</option>
-            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </FieldSelect>
-          <button
-            onClick={() => exportTransactionsToCSV(transactions, accounts)}
-            title="Export CSV"
-            className="p-2 border border-slate-200 bg-white rounded-lg hover:bg-slate-50 text-slate-700"
-          >
-            <Download size={14} />
-          </button>
-        </div>
-      </div>
-
-      {(filterAccount !== "all" || filterCategory !== "all" || search) && (
-        <Card style={{ padding: "10px 14px" }}>
-          <div className="flex items-center gap-4 flex-wrap" style={{ fontSize: 12 }}>
-            <span style={{ color: "#8A9186" }}>
-              {visible.length} matches
-            </span>
-            {visibleExpenseTotal > 0 && <span style={{ color: "#C05C4A", fontWeight: 700 }}>Spent: {money(visibleExpenseTotal)}</span>}
-            {visibleIncomeTotal > 0 && <span style={{ color: "#4C8B5C", fontWeight: 700 }}>Received: {money(visibleIncomeTotal)}</span>}
-          </div>
-        </Card>
-      )}
-
-      <Card>
-        {visible.length === 0 ? (
-          <EmptyState icon={List} text="No transactions match your search." />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {visible.map((t) =>
-              editingId === t.id ? (
-                <div key={t.id} style={{ borderTop: "1px solid #E7E9E2", paddingTop: 10 }}>
-                  <div className="grid sm:grid-cols-2 gap-2 mb-2">
-                    <FieldSelect value={editForm.accountId} onChange={(e) => setEditForm({ ...editForm, accountId: e.target.value })}>
-                      {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                    </FieldSelect>
-                    {editForm.type === "transfer" ? (
-                      <FieldSelect value={editForm.toAccountId} onChange={(e) => setEditForm({ ...editForm, toAccountId: e.target.value })}>
-                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                      </FieldSelect>
-                    ) : (
-                      <FieldSelect value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}>
-                        {(editForm.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-                      </FieldSelect>
-                    )}
-                  </div>
-                  <div className="grid sm:grid-cols-3 gap-2 mb-2">
-                    <FieldInput type="number" step="0.01" value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} />
-                    <FieldInput value={editForm.note} onChange={(e) => setEditForm({ ...editForm, note: e.target.value })} />
-                    <FieldInput type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} />
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => saveEdit(t)} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
-                    <button onClick={() => setEditingId(null)} style={{ color: "#8A9186", fontSize: 12.5 }}>Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <TxRow key={t.id} tx={t} accounts={accounts} onEdit={startEdit} onDelete={deleteTransaction} />
-              )
-            )}
-          </div>
-        )}
-      </Card>
-    </div>
-  );
-}
-
-// ---- Budgets ------------------------------------------------------------
-
-function BudgetsTab({ budgets, monthTx, upsertBudget, deleteBudget }) {
-  const [limitDrafts, setLimitDrafts] = useState({});
-
-  const spentFor = (category) => round2(monthTx.filter((t) => t.type === "expense" && t.category === category).reduce((s, t) => s + t.amount, 0));
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Monthly budgets</div>
-      <div className="grid sm:grid-cols-2 gap-4">
-        {EXPENSE_CATEGORIES.map((c) => {
-          const b = budgets.find((x) => x.category === c.name);
-          const spent = spentFor(c.name);
-          const pct = b ? (spent / b.limit) * 100 : 0;
-          const over = pct >= 100;
-          const draft = limitDrafts[c.name] ?? (b ? b.limit : "");
-          return (
-            <Card key={c.name}>
-              <div className="flex items-center gap-2 mb-2">
-                <div style={{ width: 26, height: 26, borderRadius: 7, background: c.color + "1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <c.icon size={13} color={c.color} />
-                </div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D", flex: 1 }}>{c.name}</div>
-                {b && <div style={{ fontSize: 12, color: over ? "#C05C4A" : "#8A9186" }}>{money(spent)} / {money(b.limit)}</div>}
-              </div>
-              {b && <div style={{ marginBottom: 10 }}><ProgressBar pct={pct} color={over ? "#C05C4A" : pct >= 80 ? "#C79A3E" : c.color} /></div>}
-              <div className="flex gap-2">
-                <FieldInput
-                  type="number" step="0.01" placeholder="Monthly limit"
-                  value={draft}
-                  onChange={(e) => setLimitDrafts({ ...limitDrafts, [c.name]: e.target.value })}
-                  style={{ flex: 1 }}
-                />
-                <button
-                  onClick={() => upsertBudget(c.name, round2(Number(draft) || 0))}
-                  style={{ background: "#1F2A1D", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700 }}
-                >
-                  {b ? "Update" : "Set"}
-                </button>
-                {b && (
-                  <button onClick={() => { deleteBudget(c.name); setLimitDrafts({ ...limitDrafts, [c.name]: "" }); }} style={{ color: "#C05C4A", padding: 8 }}>
-                    <Trash2 size={14} />
-                  </button>
-                )}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ---- Bills / recurring ---------------------------------------------------
-
-function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRecurring, markBillPaid }) {
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ name: "", type: "expense", category: "", accountId: "", amount: "", frequency: "monthly", nextDue: todayISO() });
-
-  const submit = () => {
-    if (!form.name.trim() || !form.accountId || !form.amount) return;
-    const cats = form.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
-    addRecurring({
-      name: form.name.trim(),
-      type: form.type,
-      category: form.category || cats[0].name,
-      accountId: form.accountId,
-      amount: round2(Number(form.amount) || 0),
-      frequency: form.frequency,
-      nextDue: form.nextDue || todayISO(),
-    });
-    setForm({ name: "", type: "expense", category: "", accountId: form.accountId, amount: "", frequency: "monthly", nextDue: todayISO() });
-    setAdding(false);
-  };
-
-  const sorted = recurring.slice().sort((a, b) => a.nextDue.localeCompare(b.nextDue));
-
-  if (accounts.length === 0) {
-    return <EmptyState icon={Repeat} text="Add an account first, then set up recurring bills." />;
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Recurring bills & subscriptions</div>
-        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
-          <Plus size={14} /> Add bill
-        </button>
-      </div>
-
-      {adding && (
-        <Card>
-          <div className="grid sm:grid-cols-2 gap-2 mb-2">
-            <FieldInput placeholder="Name (e.g. Netflix, Rent)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            <FieldSelect value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value, category: "" })}>
-              <option value="expense">Expense (I pay)</option>
-              <option value="income">Income (I receive)</option>
-            </FieldSelect>
-          </div>
-          <div className="grid sm:grid-cols-2 gap-2 mb-2">
-            <FieldSelect value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
-              <option value="">Category</option>
-              {(form.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
-            </FieldSelect>
-            <FieldSelect value={form.accountId} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
-              <option value="">Account</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </FieldSelect>
-          </div>
-          <div className="grid sm:grid-cols-3 gap-2 mb-3">
-            <FieldInput type="number" step="0.01" placeholder="Amount" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
-            <FieldSelect value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })}>
-              {Object.entries(FREQ_LABEL).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-            </FieldSelect>
-            <FieldInput type="date" value={form.nextDue} onChange={(e) => setForm({ ...form, nextDue: e.target.value })} />
-          </div>
-          <div className="flex gap-2">
-            <button onClick={submit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
-            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>Cancel</button>
-          </div>
-        </Card>
-      )}
-
-      <div className="flex flex-col gap-3">
-        {sorted.length === 0 && !adding && <EmptyState icon={Repeat} text="No recurring bills yet." />}
-        {sorted.map((r) => {
-          const d = daysUntil(r.nextDue);
-          const overdue = d < 0;
-          const c = catInfo(r.category, r.type);
-          const accName = accounts.find((a) => a.id === r.accountId)?.name || "Deleted account";
-          return (
-            <Card key={r.id} className="card-hover">
-              <div className="flex items-center gap-3">
-                <div style={{ width: 34, height: 34, borderRadius: 9, background: c.color + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <c.icon size={16} color={c.color} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{r.name}</div>
-                  <div style={{ fontSize: 11.5, color: "#8A9186" }}>
-                    {accName} · {FREQ_LABEL[r.frequency]} · <span style={{ color: overdue ? "#C05C4A" : "#8A9186", fontWeight: overdue ? 700 : 400 }}>
-                      {overdue ? `${Math.abs(d)}d overdue` : d === 0 ? "due today" : `due in ${d}d`}
-                    </span>
-                  </div>
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: r.type === "income" ? "#4C8B5C" : "#C05C4A", flexShrink: 0 }}>
-                  {r.type === "income" ? "+" : "-"}{money(r.amount).replace("-", "")}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 mt-3">
-                <button onClick={() => markBillPaid(r)} className="flex items-center gap-1" style={{ background: "#1F2A1D", color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
-                  <Check size={12} /> Mark {r.type === "income" ? "received" : "paid"}
-                </button>
-                <button onClick={() => updateRecurring(r.id, { active: !r.active })} style={{ color: "#8A9186", fontSize: 12 }}>
-                  {r.active ? "Pause" : "Resume"}
-                </button>
-                <button onClick={() => deleteRecurring(r.id)} style={{ color: "#C05C4A", padding: 4, marginLeft: "auto" }}><Trash2 size={13} /></button>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ---- Debts / IOUs with Member Support ------------------------------------
-
-function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteDebt, addMember, removeMember, settleAllWithMember }) {
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ person: members[0] || "", amount: "", direction: "owed_to_me", note: "" });
-  const [newMemberInput, setNewMemberInput] = useState("");
-  const [filterPerson, setFilterPerson] = useState("all");
-  const [expandedPerson, setExpandedPerson] = useState(null);
-  const [shareFallback, setShareFallback] = useState(null);
-
-  const shareDebt = async (d) => {
-    const message = buildDebtMessage(d);
-    if (navigator.share) {
-      try {
-        await navigator.share({ text: message });
-      } catch {
-        // user cancelled share sheet
-      }
-    } else {
-      setShareFallback({ debt: d, message });
-    }
-  };
-
-  const submit = () => {
-    if (!form.person.trim() || !form.amount) return;
-    addDebt({ person: form.person.trim(), amount: form.amount, direction: form.direction, note: form.note.trim() });
-    setForm({ person: form.person, amount: "", direction: "owed_to_me", note: "" });
-    setAdding(false);
-  };
-
-  const handleCreateMember = (e) => {
-    e.preventDefault();
-    if (!newMemberInput.trim()) return;
-    addMember(newMemberInput.trim());
-    setNewMemberInput("");
-  };
-
-  // Compute breakdown per member
-  const memberBalances = members.map((person) => {
-    const personDebts = debts.filter((d) => d.person.toLowerCase() === person.toLowerCase() && !d.settled);
-    const owedByThem = personDebts.filter((d) => d.direction === "owed_to_me").reduce((s, d) => s + d.amount, 0);
-    const iOweThem = personDebts.filter((d) => d.direction === "i_owe").reduce((s, d) => s + d.amount, 0);
-    const net = round2(owedByThem - iOweThem);
-    return { person, owedByThem, iOweThem, net, count: personDebts.length, items: personDebts };
-  });
-
-  const active = debts
-    .filter((d) => !d.settled)
-    .filter((d) => filterPerson === "all" || d.person.toLowerCase() === filterPerson.toLowerCase());
-
-  const settled = debts
-    .filter((d) => d.settled)
-    .filter((d) => filterPerson === "all" || d.person.toLowerCase() === filterPerson.toLowerCase());
-
-  const quickAmounts = [100, 200, 500, 1000];
-
-  return (
-    <div className="flex flex-col gap-4">
-      {/* Top Totals */}
-      <Card>
-        <div className="grid grid-cols-3 gap-4">
-          <StatCard label="Owed to you" value={money(owedToMe)} color="#4C8B5C" />
-          <StatCard label="You owe" value={money(iOwe)} color="#C05C4A" />
-          <StatCard label="Net" value={money(round2(owedToMe - iOwe))} color={owedToMe - iOwe < 0 ? "#C05C4A" : "#1F2A1D"} />
-        </div>
-      </Card>
-
-      {/* Member Cards Grid */}
-      <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Members & Balances</div>
-      </div>
-
-      <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
-        {memberBalances.map(({ person, net, count, items }) => (
-          <div
-            key={person}
-            className="card-hover bg-white border border-slate-200 rounded-xl p-3 flex flex-col justify-between"
-          >
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="font-display font-bold text-sm text-slate-800">{person}</span>
-                <div className="flex items-center gap-1">
-                  {count > 0 && (
-                    <button
-                      onClick={() => settleAllWithMember(person)}
-                      title="Settle all with this member"
-                      className="text-emerald-700 hover:text-emerald-800 p-1"
-                    >
-                      <CheckCheck size={14} />
-                    </button>
-                  )}
-                  {!DEFAULT_DEBT_MEMBERS.includes(person) && count === 0 && (
-                    <button onClick={() => removeMember(person)} title="Remove member" className="text-slate-400 hover:text-rose-600 p-1">
-                      <X size={13} />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-baseline justify-between mt-1.5">
-                <span className="text-xs text-slate-400">
-                  {net > 0 ? "Owes you" : net < 0 ? "You owe" : "All settled"}
-                </span>
-                <span
-                  className="font-display font-extrabold text-sm"
-                  style={{ color: net > 0 ? "#4C8B5C" : net < 0 ? "#C05C4A" : "#8A9186" }}
-                >
-                  {net === 0 ? "₹0.00" : money(net)}
-                </span>
-              </div>
-            </div>
-
-            {/* Quick Actions & Detail dropdown */}
-            <div className="mt-3 pt-2 border-t border-slate-100 flex flex-col gap-1.5">
-              <div className="flex gap-1.5">
-                <button
-                  onClick={() => {
-                    setForm({ ...form, person, direction: "owed_to_me" });
-                    setAdding(true);
-                  }}
-                  className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded py-1 text-xs font-bold"
-                >
-                  + Lent
-                </button>
-                <button
-                  onClick={() => {
-                    setForm({ ...form, person, direction: "i_owe" });
-                    setAdding(true);
-                  }}
-                  className="flex-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded py-1 text-xs font-bold"
-                >
-                  + Borrowed
-                </button>
-              </div>
-
-              {count > 0 && (
-                <button
-                  onClick={() => setExpandedPerson(expandedPerson === person ? null : person)}
-                  className="w-full text-center text-[11px] text-slate-500 hover:text-slate-800 flex items-center justify-center gap-1 pt-1"
-                >
-                  {expandedPerson === person ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                  {count} open item{count > 1 ? "s" : ""}
-                </button>
-              )}
-
-              {/* Collapsible item breakdown */}
-              {expandedPerson === person && (
-                <div className="mt-1 bg-slate-50 p-2 rounded-lg space-y-1.5 text-xs">
-                  {items.map((it) => (
-                    <div key={it.id} className="flex items-center justify-between text-slate-700">
-                      <span className="truncate pr-1">{it.note || "Unspecified"}</span>
-                      <span className={`font-semibold flex-shrink-0 ${it.direction === "owed_to_me" ? "text-emerald-700" : "text-rose-700"}`}>
-                        {money(it.amount)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Add New Member Input */}
-      <form onSubmit={handleCreateMember} className="flex gap-2">
-        <FieldInput
-          placeholder="Add another member (e.g. Ayman, Faraz)..."
-          value={newMemberInput}
-          onChange={(e) => setNewMemberInput(e.target.value)}
-          style={{ flex: 1 }}
-        />
-        <button type="submit" style={{ background: "#1F2A1D", color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
-          + Add Person
-        </button>
-      </form>
-
-      {/* Filter and Log Bar */}
-      <div className="flex items-center justify-between mt-2 flex-wrap gap-2">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span style={{ fontSize: 12, fontWeight: 600, color: "#8A9186" }}>Filter:</span>
-          <button
-            onClick={() => setFilterPerson("all")}
-            className={`px-2.5 py-1 rounded-md text-xs font-semibold border ${filterPerson === "all" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"}`}
-          >
-            All
-          </button>
-          {members.map((m) => (
-            <button
-              key={m}
-              onClick={() => setFilterPerson(m)}
-              className={`px-2.5 py-1 rounded-md text-xs font-semibold border ${filterPerson === m ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"}`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="flex items-center gap-1.5"
-          style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
-        >
-          <Plus size={14} /> Log Debt
-        </button>
-      </div>
-
-      {/* Add Debt Card */}
-      {adding && (
-        <Card>
-          <div className="flex gap-2 mb-2">
-            <button
-              onClick={() => setForm({ ...form, direction: "owed_to_me" })}
-              style={{ flex: 1, background: form.direction === "owed_to_me" ? "#4C8B5C" : "#F7F8F5", color: form.direction === "owed_to_me" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
-            >
-              They owe me (I Lent)
-            </button>
-            <button
-              onClick={() => setForm({ ...form, direction: "i_owe" })}
-              style={{ flex: 1, background: form.direction === "i_owe" ? "#C05C4A" : "#F7F8F5", color: form.direction === "i_owe" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
-            >
-              I owe them (I Borrowed)
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1.5 mb-2 overflow-x-auto py-1">
-            <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Select person:</span>
-            {members.map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setForm({ ...form, person: m })}
-                style={{
-                  background: form.person === m ? "#1F2A1D" : "#F7F8F5",
-                  color: form.person === m ? "#fff" : "#4A5247",
-                  fontSize: 11.5,
-                  padding: "4px 8px",
-                  borderRadius: 6,
-                  fontWeight: 600,
-                  border: "1px solid #E7E9E2",
-                  flexShrink: 0,
-                }}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-
-          <div className="grid sm:grid-cols-2 gap-2 mb-2">
-            <FieldInput
-              placeholder="Person's name"
-              value={form.person}
-              onChange={(e) => setForm({ ...form, person: e.target.value })}
-            />
-            <FieldInput
-              type="number"
-              step="0.01"
-              placeholder="Amount (₹)"
-              value={form.amount}
-              onChange={(e) => setForm({ ...form, amount: e.target.value })}
-            />
-          </div>
-
-          <div className="flex items-center gap-1.5 mb-2">
-            <span style={{ fontSize: 11, color: "#8A9186" }}>Quick amount:</span>
-            {quickAmounts.map((q) => (
-              <button
-                key={q}
-                type="button"
-                onClick={() => setForm({ ...form, amount: String(q) })}
-                style={{ background: "#F7F8F5", border: "1px solid #E7E9E2", color: "#4A5247", borderRadius: 6, padding: "3px 8px", fontSize: 11.5, fontWeight: 600 }}
-              >
-                +₹{q}
-              </button>
-            ))}
-          </div>
-
-          <FieldInput
-            placeholder="Note (e.g. Biryani, Metro recharge, Chai, Rent)"
-            value={form.note}
-            onChange={(e) => setForm({ ...form, note: e.target.value })}
-            style={{ width: "100%", marginBottom: 12 }}
-          />
-
-          <div className="flex gap-2">
-            <button onClick={submit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>
-              Save Debt
-            </button>
-            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>
-              Cancel
-            </button>
-          </div>
-        </Card>
-      )}
-
-      {/* Active List */}
-      <Card>
-        {active.length === 0 ? (
-          <EmptyState icon={HandCoins} text={filterPerson === "all" ? "No open debts." : `No open debts for ${filterPerson}.`} />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {active.map((d) => (
-              <div key={d.id} className="flex items-center gap-3">
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: (d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A") + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <User size={15} color={d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A"} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{d.person}</div>
-                  <div style={{ fontSize: 11, color: "#8A9186" }}>
-                    {d.direction === "owed_to_me" ? "owes you" : "you owe"} · {fmtDateShort(d.date)}{d.note ? ` · ${d.note}` : ""}
-                  </div>
-                </div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A", flexShrink: 0 }}>
-                  {money(d.amount)}
-                </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <button onClick={() => shareDebt(d)} title="Share reminder" style={{ color: "#8A9186", padding: 4 }}><Share size={14} /></button>
-                  <button onClick={() => updateDebt(d.id, { settled: true })} title="Mark settled" style={{ color: "#4C8B5C", padding: 4 }}><Check size={14} /></button>
-                  <button onClick={() => deleteDebt(d.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      {/* Settled List */}
-      {settled.length > 0 && (
-        <Card>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#8A9186", marginBottom: 8 }}>Settled History</div>
-          <div className="flex flex-col gap-2">
-            {settled.map((d) => (
-              <div key={d.id} className="flex items-center gap-3" style={{ opacity: 0.65 }}>
-                <div style={{ flex: 1, fontSize: 12.5, color: "#1F2A1D", textDecoration: "line-through" }}>
-                  {d.person} — {money(d.amount)} {d.note ? `(${d.note})` : ""}
-                </div>
-                <button onClick={() => updateDebt(d.id, { settled: false })} style={{ fontSize: 11, color: "#8A9186", textDecoration: "underline" }}>reopen</button>
-                <button onClick={() => deleteDebt(d.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={12} /></button>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {shareFallback && <ShareFallbackModal data={shareFallback} onClose={() => setShareFallback(null)} />}
-    </div>
-  );
-}
-
-function ShareFallbackModal({ data, onClose }) {
-  const [copied, setCopied] = useState(false);
-  const { debt, message } = data;
-  const waLink = `https://wa.me/?text=${encodeURIComponent(message)}`;
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(message);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // best effort
-    }
-  };
-
-  return (
-    <div
-      onClick={onClose}
-      style={{ position: "fixed", inset: 0, background: "rgba(31,42,29,0.45)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ background: "#FFFFFF", borderRadius: 16, padding: 20, maxWidth: 380, width: "100%", boxShadow: "0 10px 40px rgba(31,42,29,0.2)" }}
-      >
-        <div className="flex items-center justify-between mb-3">
-          <div className="font-display" style={{ fontWeight: 700, fontSize: 15, color: "#1F2A1D" }}>Share with {debt.person}</div>
-          <button onClick={onClose} style={{ color: "#8A9186" }}><X size={16} /></button>
-        </div>
-        <div style={{ background: "#F7F8F5", border: "1px solid #E7E9E2", borderRadius: 10, padding: 12, fontSize: 12.5, color: "#4A5247", lineHeight: 1.5, marginBottom: 14 }}>
-          {message}
-        </div>
-        <div className="flex flex-col gap-2">
-          <a
-            href={waLink}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2"
-            style={{ background: "#4C8B5C", color: "#fff", borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700, textDecoration: "none" }}
-          >
-            <MessageCircle size={15} /> Open in WhatsApp
-          </a>
-          <button
-            onClick={copy}
-            className="flex items-center justify-center gap-2"
-            style={{ background: "#F7F8F5", color: "#1F2A1D", border: "1px solid #E7E9E2", borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}
-          >
-            <Copy size={14} /> {copied ? "Copied!" : "Copy message"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---- Reports ---------------------------------------------------------
+// ---- Reports Tab ---------------------------------------------------------
 
 function ReportsTab({ transactions, accounts }) {
+  const safeTx = Array.isArray(transactions) ? transactions : [];
+  const safeAcc = Array.isArray(accounts) ? accounts : [];
+
   const months = [];
   const base = new Date();
   for (let i = 5; i >= 0; i--) {
@@ -2052,11 +1466,11 @@ function ReportsTab({ transactions, accounts }) {
     months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
   }
   const monthly = months.map((mk) => {
-    const tx = transactions.filter((t) => monthKeyOf(t.date) === mk);
+    const tx = safeTx.filter((t) => t && monthKeyOf(t.date) === mk);
     return {
       mk,
-      income: round2(tx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0)),
-      expense: round2(tx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0)),
+      income: round2(tx.filter((t) => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0)),
+      expense: round2(tx.filter((t) => t.type === "expense").reduce((s, t) => s + (Number(t.amount) || 0), 0)),
     };
   });
   const maxVal = Math.max(1, ...monthly.map((m) => Math.max(m.income, m.expense)));
@@ -2064,7 +1478,7 @@ function ReportsTab({ transactions, accounts }) {
   const thisMonth = monthKeyOf(todayISO());
   const catTotals = EXPENSE_CATEGORIES.map((c) => ({
     ...c,
-    total: round2(transactions.filter((t) => t.type === "expense" && t.category === c.name && monthKeyOf(t.date) === thisMonth).reduce((s, t) => s + t.amount, 0)),
+    total: round2(safeTx.filter((t) => t && t.type === "expense" && t.category === c.name && monthKeyOf(t.date) === thisMonth).reduce((s, t) => s + (Number(t.amount) || 0), 0)),
   })).filter((c) => c.total > 0).sort((a, b) => b.total - a.total);
   const catMax = Math.max(1, ...catTotals.map((c) => c.total));
 
@@ -2072,7 +1486,7 @@ function ReportsTab({ transactions, accounts }) {
     <div className="flex flex-col gap-4">
       <div className="flex justify-end">
         <button
-          onClick={() => exportTransactionsToCSV(transactions, accounts)}
+          onClick={() => exportTransactionsToCSV(safeTx, safeAcc)}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50"
         >
           <FileSpreadsheet size={14} className="text-emerald-600" />
