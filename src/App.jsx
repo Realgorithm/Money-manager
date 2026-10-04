@@ -483,6 +483,7 @@ export default function App() {
     persistCredentials({ ...credentials, pinHash: await hashPin(next) });
     return "";
   };
+  const saveName = (name) => persistCredentials({ ...credentials, name: name.trim().slice(0, 30) });
   const createRecovery = async () => {
     const code = genRecoveryCode();
     persistCredentials({ ...credentials, recoveryHash: await hashRecovery(code) });
@@ -575,6 +576,7 @@ export default function App() {
           resolvedTheme={resolvedTheme}
           onSettings={() => setShowSettings(true)}
           onLock={lockNow}
+          name={credentials.name}
         />
         <div key={tab} className="fade-up">
 
@@ -643,6 +645,8 @@ export default function App() {
         <SettingsModal
           prefs={prefs}
           setPrefs={setPrefs}
+          name={credentials?.name || ""}
+          onSaveName={saveName}
           hasRecovery={!!credentials?.recoveryHash}
           onChangePin={changePin}
           onCreateRecovery={createRecovery}
@@ -845,6 +849,8 @@ function NewPinFlow({ title, subtitle, onDone, onBack }) {
 }
 
 function PinSetup({ onDone }) {
+  const [name, setName] = useState("");
+  const [nameDone, setNameDone] = useState(false);
   const [pinHash, setPinHash] = useState(null);
   const [code, setCode] = useState("");
   const [saved, setSaved] = useState(false);
@@ -854,6 +860,18 @@ function PinSetup({ onDone }) {
     try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* best effort */ }
   };
 
+  if (!nameDone) {
+    return (
+      <AuthShell>
+        <div className="flex items-center gap-3 mb-4"><BrandMark /><div>
+          <h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>Welcome 👋</h1>
+          <div style={{ color: T.muted, fontSize: 12.5 }}>What should we call you?</div>
+        </div></div>
+        <FieldInput autoFocus placeholder="Your name" value={name} maxLength={30} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && setNameDone(true)} style={{ width: "100%", padding: "12px 12px", fontSize: 15, marginBottom: 14 }} />
+        <PrimaryButton onClick={() => setNameDone(true)}>{name.trim() ? "Continue" : "Skip"}</PrimaryButton>
+      </AuthShell>
+    );
+  }
   if (!pinHash) {
     return (
       <AuthShell>
@@ -878,8 +896,8 @@ function PinSetup({ onDone }) {
       <label className="flex items-center gap-2" style={{ margin: "14px 0", fontSize: 12.5, color: T.text2, cursor: "pointer" }}>
         <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} /> I've saved my recovery code
       </label>
-      <PrimaryButton disabled={!saved} onClick={async () => onDone({ pinHash, recoveryHash: await hashRecovery(code) })}>Start using Money Manager</PrimaryButton>
-      <div className="text-center mt-3"><LinkButton onClick={() => onDone({ pinHash })}>Skip for now (you can create one in Settings)</LinkButton></div>
+      <PrimaryButton disabled={!saved} onClick={async () => onDone({ pinHash, recoveryHash: await hashRecovery(code), name: name.trim() })}>Start using Money Manager</PrimaryButton>
+      <div className="text-center mt-3"><LinkButton onClick={() => onDone({ pinHash, name: name.trim() })}>Skip for now (you can create one in Settings)</LinkButton></div>
     </AuthShell>
   );
 }
@@ -987,7 +1005,7 @@ function PinUnlock({ credentials, onUnlock, onResetPin, onErase }) {
   return (
     <AuthShell>
       <div className="flex items-center gap-3 mb-4"><BrandMark /><div>
-        <h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>Welcome back</h1>
+        <h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>{credentials.name ? `Welcome back, ${credentials.name}` : "Welcome back"}</h1>
         <div style={{ color: T.muted, fontSize: 12.5 }}>Enter your PIN to unlock</div>
       </div></div>
       <PinPad value={pin} onChange={(v) => { setPin(v); setError(""); }} onSubmit={submit} shake={shake} disabled={locked} />
@@ -1049,7 +1067,9 @@ function SoftButton({ children, danger, ...rest }) {
   );
 }
 
-function SettingsModal({ prefs, setPrefs, hasRecovery, onChangePin, onCreateRecovery, onBackup, onRestore, onExportCsv, onErase, onLock, onClose }) {
+function SettingsModal({ prefs, setPrefs, name, onSaveName, hasRecovery, onChangePin, onCreateRecovery, onBackup, onRestore, onExportCsv, onErase, onLock, onClose }) {
+  const [nameDraft, setNameDraft] = useState(name || "");
+  const [nameSaved, setNameSaved] = useState(false);
   const [pinForm, setPinForm] = useState({ cur: "", next: "", confirm: "" });
   const [pinMsg, setPinMsg] = useState(null);
   const [newCode, setNewCode] = useState("");
@@ -1084,6 +1104,13 @@ function SettingsModal({ prefs, setPrefs, hasRecovery, onChangePin, onCreateReco
           <div className="font-display" style={{ fontWeight: 800, fontSize: 18, color: T.ink }}>Settings</div>
           <button onClick={onClose} aria-label="Close" style={{ color: T.muted }}><X size={18} /></button>
         </div>
+
+        <SettingsSection title="Profile">
+          <div className="flex gap-2">
+            <FieldInput placeholder="Your name" value={nameDraft} maxLength={30} onChange={(e) => { setNameDraft(e.target.value); setNameSaved(false); }} onKeyDown={(e) => e.key === "Enter" && (onSaveName(nameDraft), setNameSaved(true))} style={{ flex: 1, minWidth: 0 }} />
+            <SoftButton onClick={() => { onSaveName(nameDraft); setNameSaved(true); }} disabled={nameDraft.trim() === (name || "")}>{nameSaved ? "Saved" : "Save"}</SoftButton>
+          </div>
+        </SettingsSection>
 
         <SettingsSection title="Appearance & privacy">
           <Segmented value={prefs.theme} onChange={(theme) => setPrefs({ theme })} options={[{ id: "auto", label: "Auto" }, { id: "light", label: "Sage light" }, { id: "dark", label: "Forest night" }]} />
@@ -1188,7 +1215,7 @@ function IconButton({ children, label, onClick, active }) {
   );
 }
 
-function Header({ tab, setTab, netWorth, overdueBills, prefs, setPrefs, resolvedTheme, onSettings, onLock }) {
+function Header({ tab, setTab, netWorth, overdueBills, prefs, setPrefs, resolvedTheme, onSettings, onLock, name }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "transactions", label: "Transactions", icon: List },
@@ -1207,7 +1234,10 @@ function Header({ tab, setTab, netWorth, overdueBills, prefs, setPrefs, resolved
           <BrandMark size={42} />
           <div style={{ minWidth: 0 }}>
             <h1 className="font-display" style={{ color: T.ink, fontSize: 21, fontWeight: 800, letterSpacing: -0.4, lineHeight: 1.15 }}>Money Manager</h1>
-            <div style={{ color: T.muted, fontSize: 12.5 }}>{greeting} · <span style={{ color: netWorth < 0 ? T.neg : T.text2, fontWeight: 600 }}>{money(netWorth)}</span></div>
+            <div style={{ color: T.muted, fontSize: 12.5 }}>
+              {greeting}
+              {name ? <>, <strong style={{ color: T.ink, fontWeight: 700 }}>{name}</strong></> : <> · <button onClick={onSettings} style={{ color: T.pos, textDecoration: "underline" }}>add your name</button></>}
+              {" · "}<span style={{ color: netWorth < 0 ? T.neg : T.text2, fontWeight: 600 }}>{money(netWorth)}</span></div>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
