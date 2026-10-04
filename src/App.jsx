@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Plus, Trash2, X, Wallet, ArrowUpRight, ArrowDownRight, ArrowRightLeft,
   MoreHorizontal, Pencil, Check, Download, Share, Landmark, Banknote, CreditCard, Repeat,
   HandCoins, TrendingUp, TrendingDown, Target, LayoutDashboard, List, User,
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
   Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet,
-  Camera, Loader2, Sparkles
+  Camera, Loader2, Sparkles, Leaf, Eye, EyeOff, Moon, Sun, Settings, KeyRound, ShieldCheck, Upload,
+  Delete as DeleteIcon, PiggyBank, CalendarDays
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { parsePaymentReceipt, matchAccount } from "./receiptParser";
@@ -39,8 +40,37 @@ async function saveKey(key, value) {
   }
 }
 
+// ---- theme ("Sage Mist" light / "Forest Night" dark) ------------------------
+// Soft, low-glare palettes: no pure white / pure black, muted greens, warm greys.
+const PALETTES = {
+  light: {
+    bg: "#EDF1EA", card: "#F8FAF6", ink: "#26332A", text2: "#4F5C52", muted: "#68766C", faint: "#A3AFA5",
+    line: "#D9E1D7", soft: "#E1E9DF", pos: "#4E8A63", neg: "#BF6455", warn: "#C79A3E",
+    heroA: "#5A9477", heroB: "#3F7B6D", shadow: "0 2px 12px rgba(38,51,42,0.06)", scrim: "rgba(38,51,42,0.42)",
+  },
+  dark: {
+    bg: "#111814", card: "#19221D", ink: "#DCE6DD", text2: "#B2C0B5", muted: "#8C9B90", faint: "#5E6C62",
+    line: "#2A3730", soft: "#222D27", pos: "#58A06F", neg: "#D9776A", warn: "#D2A94F",
+    heroA: "#2E5D49", heroB: "#244A47", shadow: "0 2px 14px rgba(0,0,0,0.30)", scrim: "rgba(0,0,0,0.55)",
+  },
+};
+// T is read by every component while rendering; App swaps its values whenever the theme changes.
+const T = { ...PALETTES.light };
+let HIDE_AMOUNTS = false;
+const applyTheme = (name, hide) => {
+  Object.assign(T, PALETTES[name] || PALETTES.light);
+  HIDE_AMOUNTS = !!hide;
+};
+const PREFS_KEY = "finance_prefs"; // per-device (not synced)
+const DEFAULT_PREFS = { theme: "auto", hide: false, autoLockMin: 5 };
+const loadPrefs = () => {
+  try { return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") }; } catch { return { ...DEFAULT_PREFS }; }
+};
+
 const uid = () => Math.random().toString(36).slice(2, 10);
-const money = (n) => (n < 0 ? "-₹" : "₹") + Math.abs(n).toFixed(2);
+const moneyRaw = (n) => (n < 0 ? "-₹" : "₹") + Math.abs(n).toFixed(2);
+// money() honours the "hide amounts" privacy switch; moneyRaw() is for text that gets shared.
+const money = (n) => (HIDE_AMOUNTS ? "₹ ••••" : moneyRaw(n));
 const round2 = (n) => Math.round(n * 100) / 100;
 const todayISO = () => {
   const d = new Date();
@@ -106,7 +136,7 @@ const catInfo = (name, type) => (type === "income" ? incCatInfo(name) : expCatIn
 const FREQ_LABEL = { weekly: "Weekly", biweekly: "Every 2 weeks", monthly: "Monthly", yearly: "Yearly" };
 
 function buildDebtMessage(d) {
-  const amt = money(d.amount);
+  const amt = moneyRaw(d.amount);
   if (d.direction === "owed_to_me") {
     return `Hi ${d.person}, quick reminder — you owe me ${amt}${d.note ? ` for ${d.note}` : ""}. Thanks!`;
   }
@@ -118,15 +148,15 @@ function buildMemberSummaryMessage(person, items) {
   const theyOwe = items.filter((d) => d.direction === "owed_to_me");
   const iOwe = items.filter((d) => d.direction === "i_owe");
   const sum = (arr) => round2(arr.reduce((t, d) => t + d.amount, 0));
-  const line = (d, i) => `${i + 1}. ${money(d.amount)}${d.note ? ` – ${d.note}` : ""} (${fmtDateShort(d.date)})`;
+  const line = (d, i) => `${i + 1}. ${moneyRaw(d.amount)}${d.note ? ` – ${d.note}` : ""} (${fmtDateShort(d.date)})`;
   const net = round2(sum(theyOwe) - sum(iOwe));
 
   const parts = [`Hi ${person}, here's our current balance:`];
-  if (theyOwe.length) parts.push("", `You owe me (${money(sum(theyOwe))}):`, ...theyOwe.map(line));
-  if (iOwe.length) parts.push("", `I owe you (${money(sum(iOwe))}):`, ...iOwe.map(line));
+  if (theyOwe.length) parts.push("", `You owe me (${moneyRaw(sum(theyOwe))}):`, ...theyOwe.map(line));
+  if (iOwe.length) parts.push("", `I owe you (${moneyRaw(sum(iOwe))}):`, ...iOwe.map(line));
   parts.push(
     "",
-    net > 0 ? `Net: you owe me ${money(net)}.` : net < 0 ? `Net: I owe you ${money(Math.abs(net))}.` : "Net: we're all square.",
+    net > 0 ? `Net: you owe me ${moneyRaw(net)}.` : net < 0 ? `Net: I owe you ${moneyRaw(Math.abs(net))}.` : "Net: we're all square.",
     net > 0 ? "Thanks!" : net < 0 ? "I'll get you sorted soon." : ""
   );
   return parts.join("\n").trim();
@@ -187,6 +217,47 @@ export default function App() {
   const [installEvent, setInstallEvent] = useState(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
   const [iosInstallHint, setIosInstallHint] = useState(false);
+  const [prefs, setPrefsState] = useState(loadPrefs);
+  const [systemDark, setSystemDark] = useState(() => !!window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  const [showSettings, setShowSettings] = useState(false);
+
+  const setPrefs = useCallback((patch) => {
+    setPrefsState((p) => {
+      const n = { ...p, ...patch };
+      try { localStorage.setItem(PREFS_KEY, JSON.stringify(n)); } catch { /* best effort */ }
+      return n;
+    });
+  }, []);
+  const resolvedTheme = prefs.theme === "auto" ? (systemDark ? "dark" : "light") : prefs.theme;
+  applyTheme(resolvedTheme, prefs.hide); // swap the palette BEFORE any child renders
+
+  useEffect(() => {
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    const h = (e) => setSystemDark(e.matches);
+    mq.addEventListener("change", h);
+    return () => mq.removeEventListener("change", h);
+  }, []);
+  useEffect(() => {
+    document.body.style.background = T.bg;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", T.bg);
+  }, [resolvedTheme]);
+
+  const lockNow = useCallback(() => {
+    sessionStorage.removeItem("finance_unlocked");
+    setShowSettings(false);
+    setQuickAddModal(false);
+    setUnlocked(false);
+  }, []);
+  useEffect(() => {
+    if (!unlocked || !prefs.autoLockMin) return;
+    let last = Date.now();
+    const bump = () => { last = Date.now(); };
+    const evs = ["pointerdown", "keydown", "touchstart", "scroll"];
+    evs.forEach((e) => window.addEventListener(e, bump, { passive: true }));
+    const iv = setInterval(() => { if (Date.now() - last > prefs.autoLockMin * 60000) lockNow(); }, 10000);
+    return () => { evs.forEach((e) => window.removeEventListener(e, bump)); clearInterval(iv); };
+  }, [unlocked, prefs.autoLockMin, lockNow]);
 
   useEffect(() => {
     (async () => {
@@ -406,6 +477,58 @@ export default function App() {
     persistDebts(debts.map((d) => (d.person.toLowerCase() === person.toLowerCase() ? { ...d, settled: true } : d)));
   };
 
+  // Security & data (Settings)
+  const changePin = async (current, next) => {
+    if ((await hashPin(current)) !== credentials.pinHash) return "Current PIN is incorrect.";
+    persistCredentials({ ...credentials, pinHash: await hashPin(next) });
+    return "";
+  };
+  const createRecovery = async () => {
+    const code = genRecoveryCode();
+    persistCredentials({ ...credentials, recoveryHash: await hashRecovery(code) });
+    return code;
+  };
+  const eraseAll = async () => {
+    for (const k of Object.values(KEYS)) {
+      try { await window.storage.delete(k, true); } catch { /* best effort */ }
+    }
+    sessionStorage.removeItem("finance_unlocked");
+    localStorage.removeItem("finance_pin_fails");
+    window.location.reload();
+  };
+  const downloadFile = (name, text, type) => {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const exportBackup = () =>
+    downloadFile(
+      `money-manager-backup_${todayISO()}.json`,
+      JSON.stringify({ app: "money-manager", version: 1, exportedAt: new Date().toISOString(), data: { accounts, transactions, budgets, recurring, debts, debtMembers } }, null, 2),
+      "application/json"
+    );
+  const restoreBackup = async (file) => {
+    try {
+      const parsed = JSON.parse(await file.text());
+      const d = parsed?.data;
+      const lists = ["accounts", "transactions", "budgets", "recurring", "debts", "debtMembers"];
+      if (parsed?.app !== "money-manager" || !d || !lists.every((k) => Array.isArray(d[k]))) {
+        return { ok: false, text: "That doesn't look like a Money Manager backup." };
+      }
+      if (!window.confirm(`Replace your current data with this backup (${d.accounts.length} accounts, ${d.transactions.length} transactions)?`)) {
+        return { ok: false, text: "Restore cancelled." };
+      }
+      persistAccounts(d.accounts); persistTransactions(d.transactions); persistBudgets(d.budgets);
+      persistRecurring(d.recurring); persistDebts(d.debts);
+      persistDebtMembers(d.debtMembers.length ? d.debtMembers : DEFAULT_DEBT_MEMBERS);
+      return { ok: true, text: "Backup restored." };
+    } catch {
+      return { ok: false, text: "Couldn't read that file." };
+    }
+  };
+
   // Derived summaries
   const netWorth = round2(accounts.reduce((s, a) => s + a.balance, 0));
   const thisMonth = monthKeyOf(todayISO());
@@ -416,11 +539,13 @@ export default function App() {
   const iOwe = round2(debts.filter((d) => d.direction === "i_owe" && !d.settled).reduce((s, d) => s + d.amount, 0));
 
   if (!ready) return <LoadingScreen />;
-  if (!credentials) return <PinSetup onDone={(hash) => persistCredentials({ pinHash: hash })} />;
+  if (!credentials) return <PinSetup onDone={(creds) => persistCredentials(creds)} />;
   if (!unlocked) {
     return (
       <PinUnlock
         credentials={credentials}
+        onResetPin={(pinHash) => persistCredentials({ ...credentials, pinHash })}
+        onErase={eraseAll}
         onUnlock={() => {
           sessionStorage.setItem("finance_unlocked", "1");
           setUnlocked(true);
@@ -430,7 +555,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ background: "#F7F8F5", minHeight: "100vh" }}>
+    <div style={{ background: T.bg, minHeight: "100vh", color: T.ink }}>
       <GlobalStyle />
       {(showInstallBanner || iosInstallHint) && (
         <InstallBanner
@@ -440,7 +565,18 @@ export default function App() {
         />
       )}
       <div className="max-w-5xl mx-auto px-4 sm:px-6 pb-28 pt-6 sm:pt-8">
-        <Header tab={tab} setTab={setTab} netWorth={netWorth} overdueBills={recurring.filter((r) => r.active && daysUntil(r.nextDue) < 0).length} />
+        <Header
+          tab={tab}
+          setTab={setTab}
+          netWorth={netWorth}
+          overdueBills={recurring.filter((r) => r.active && daysUntil(r.nextDue) < 0).length}
+          prefs={prefs}
+          setPrefs={setPrefs}
+          resolvedTheme={resolvedTheme}
+          onSettings={() => setShowSettings(true)}
+          onLock={lockNow}
+        />
+        <div key={tab} className="fade-up">
 
         {tab === "dashboard" && (
           <DashboardTab
@@ -490,17 +626,34 @@ export default function App() {
           />
         )}
         {tab === "reports" && <ReportsTab transactions={transactions} accounts={accounts} />}
+        </div>
       </div>
 
       {/* Floating Action Button for Quick Add on any screen */}
       <button
         onClick={() => setQuickAddModal(true)}
-        className="fixed bottom-6 right-6 flex items-center gap-2 px-4 py-3 rounded-full text-white shadow-xl hover:scale-105 transition-all z-40"
-        style={{ background: "#1F2A1D" }}
+        className="fixed bottom-6 right-6 flex items-center gap-2 px-4 py-3 rounded-full text-white hover:scale-105 transition-all z-40"
+        style={{ background: `linear-gradient(135deg, ${T.heroA}, ${T.heroB})`, boxShadow: "0 10px 28px rgba(0,0,0,0.22)" }}
       >
         <Plus size={18} />
         <span className="text-xs font-bold font-display">Log / Scan Receipt</span>
       </button>
+
+      {showSettings && (
+        <SettingsModal
+          prefs={prefs}
+          setPrefs={setPrefs}
+          hasRecovery={!!credentials?.recoveryHash}
+          onChangePin={changePin}
+          onCreateRecovery={createRecovery}
+          onBackup={exportBackup}
+          onRestore={restoreBackup}
+          onExportCsv={() => exportTransactionsToCSV(transactions, accounts)}
+          onErase={eraseAll}
+          onLock={lockNow}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
 
       {/* Global Quick Add Modal with OCR Scanner */}
       {quickAddModal && (
@@ -521,99 +674,476 @@ export default function App() {
 
 function LoadingScreen() {
   return (
-    <div style={{ background: "#F7F8F5", minHeight: "100vh" }} className="flex items-center justify-center">
+    <div style={{ background: T.bg, minHeight: "100vh" }} className="flex items-center justify-center">
       <GlobalStyle />
-      <div style={{ color: "#8A9186", fontSize: 13 }}>Loading…</div>
+      <div style={{ color: T.muted, fontSize: 13 }}>Loading…</div>
     </div>
   );
 }
 
 function GlobalStyle() {
+  const dark = T.bg === PALETTES.dark.bg;
   return (
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap');
+      :root { color-scheme: ${dark ? "dark" : "light"}; }
       * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
+      html, body { background: ${T.bg}; transition: background-color .25s ease; }
+      body { color: ${T.ink}; -webkit-font-smoothing: antialiased; }
       .font-display { font-family: 'Manrope', sans-serif; }
-      input, select { outline: none; }
-      input:focus, select:focus { box-shadow: 0 0 0 3px rgba(76,139,92,0.15); border-color: #4C8B5C !important; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important; }
+      input, select, textarea { outline: none; }
+      input:focus, select:focus { box-shadow: 0 0 0 3px ${T.pos}33; border-color: ${T.pos} !important; }
+      input::placeholder { color: ${T.faint}; }
+      button { cursor: pointer; transition: transform .12s ease, opacity .15s ease, background-color .2s ease, border-color .2s ease; }
+      button:active:not(:disabled) { transform: scale(.97); }
+      button:disabled { cursor: not-allowed; }
       ::-webkit-scrollbar { width: 6px; height: 6px; }
-      ::-webkit-scrollbar-thumb { background: #DCE0D6; border-radius: 4px; }
-      .card-hover { transition: box-shadow .15s ease, transform .15s ease; }
-      .card-hover:hover { box-shadow: 0 6px 20px rgba(31,42,29,0.08); transform: translateY(-1px); }
+      ::-webkit-scrollbar-thumb { background: ${T.line}; border-radius: 4px; }
+      .card-hover { transition: box-shadow .2s ease, transform .2s ease; }
+      .card-hover:hover { box-shadow: 0 8px 24px ${dark ? "rgba(0,0,0,0.35)" : "rgba(38,51,42,0.09)"}; transform: translateY(-1px); }
+      @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+      @keyframes shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
+      @keyframes sheetIn { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+      .fade-up { animation: fadeUp .35s ease both; }
+      .shake { animation: shake .35s ease; }
+      .sheet-in { animation: sheetIn .28s ease both; }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+      /* Re-colour the few Tailwind utility classes used around the app so they follow the theme */
+      .bg-white { background-color: ${T.card} !important; }
+      .bg-slate-50, .hover\\:bg-slate-50:hover { background-color: ${T.bg} !important; }
+      .bg-slate-100, .hover\\:bg-slate-100\\/70:hover, .hover\\:bg-slate-200:hover { background-color: ${T.soft} !important; }
+      .bg-slate-900 { background-color: ${T.ink} !important; color: ${T.bg} !important; }
+      .hover\\:bg-slate-800:hover { background-color: ${T.text2} !important; }
+      .border-slate-200, .border-slate-100 { border-color: ${T.line} !important; }
+      .border-slate-900 { border-color: ${T.ink} !important; }
+      .text-slate-400 { color: ${T.faint} !important; }
+      .text-slate-500, .text-slate-600, .hover\\:text-slate-600:hover { color: ${T.muted} !important; }
+      .text-slate-700 { color: ${T.text2} !important; }
+      .text-slate-800, .text-slate-900, .hover\\:text-slate-800:hover { color: ${T.ink} !important; }
+      .bg-emerald-50, .bg-emerald-100\\/70, .hover\\:bg-emerald-100:hover { background-color: ${T.pos}22 !important; }
+      .bg-rose-50, .hover\\:bg-rose-100:hover { background-color: ${T.neg}22 !important; }
+      .text-emerald-600, .text-emerald-700, .text-emerald-800, .hover\\:text-emerald-800:hover { color: ${T.pos} !important; }
+      .text-rose-700, .text-rose-800, .hover\\:text-rose-600:hover { color: ${T.neg} !important; }
+      .bg-emerald-600 { background-color: ${T.pos} !important; }
+      .bg-rose-600 { background-color: ${T.neg} !important; }
+      .border-emerald-600 { border-color: ${T.pos} !important; }
     `}</style>
+  );
+}
+
+// ---- auth ------------------------------------------------------------------
+
+const RECOVERY_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
+const genRecoveryCode = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const raw = Array.from(bytes, (b) => RECOVERY_CHARS[b % RECOVERY_CHARS.length]).join("");
+  return raw.match(/.{4}/g).join("-");
+};
+const formatRecovery = (v) => (v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16).match(/.{1,4}/g) || []).join("-");
+const hashRecovery = (code) => hashPin("recovery:" + code.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+
+function BrandMark({ size = 40 }) {
+  return (
+    <div style={{ width: size, height: size, borderRadius: size * 0.32, background: `linear-gradient(135deg, ${T.heroA}, ${T.heroB})`, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: T.shadow, flexShrink: 0 }}>
+      <Leaf size={size * 0.5} color="#fff" />
+    </div>
   );
 }
 
 function AuthShell({ children }) {
   return (
-    <div style={{ background: "#F7F8F5", minHeight: "100vh" }} className="flex items-center justify-center px-4">
+    <div style={{ background: `radial-gradient(900px 420px at 50% -8%, ${T.soft}, ${T.bg})`, minHeight: "100vh" }} className="flex items-center justify-center px-4 py-8">
       <GlobalStyle />
-      <div style={{ background: "#FFFFFF", border: "1px solid #E7E9E2", borderRadius: 16, padding: 28, maxWidth: 380, width: "100%", boxShadow: "0 4px 16px rgba(31,42,29,0.06)" }}>
+      <div className="fade-up" style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 22, padding: 26, maxWidth: 380, width: "100%", boxShadow: T.shadow }}>
         {children}
       </div>
     </div>
   );
 }
 
-function PinSetup({ onDone }) {
-  const [pin, setPin] = useState("");
-  const [confirm, setConfirm] = useState("");
+function PrimaryButton({ children, style, ...rest }) {
+  return (
+    <button {...rest} className="w-full" style={{ background: T.pos, color: "#fff", borderRadius: 12, padding: "12px 16px", fontWeight: 700, fontSize: 13.5, opacity: rest.disabled ? 0.5 : 1, ...style }}>
+      {children}
+    </button>
+  );
+}
+function LinkButton({ children, ...rest }) {
+  return <button {...rest} style={{ color: T.muted, fontSize: 12.5, textDecoration: "underline", ...rest.style }}>{children}</button>;
+}
+
+function PinPad({ value, onChange, onSubmit, max = 8, disabled, shake }) {
+  const latest = useRef({});
+  latest.current = { value, onChange, onSubmit, disabled };
+  useEffect(() => {
+    const h = (e) => {
+      const { value, onChange, onSubmit, disabled } = latest.current;
+      if (disabled || e.target.tagName === "INPUT") return;
+      if (/^\d$/.test(e.key)) { if (value.length < max) onChange(value + e.key); }
+      else if (e.key === "Backspace") onChange(value.slice(0, -1));
+      else if (e.key === "Enter" && onSubmit) onSubmit();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [max]);
+
+  const key = (content, onClick, label) => (
+    <button key={label} aria-label={label} disabled={disabled} onClick={onClick}
+      style={{ height: 54, borderRadius: 14, background: T.soft, color: T.ink, fontSize: 19, fontWeight: 600, border: `1px solid ${T.line}`, opacity: disabled ? 0.5 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      {content}
+    </button>
+  );
+  return (
+    <div>
+      <div className={shake ? "shake" : ""} style={{ display: "flex", justifyContent: "center", gap: 12, margin: "4px 0 18px", minHeight: 14 }}>
+        {Array.from({ length: Math.max(4, value.length) }).map((_, i) => (
+          <span key={i} style={{ width: 13, height: 13, borderRadius: 99, background: i < value.length ? T.pos : "transparent", border: `2px solid ${i < value.length ? T.pos : T.faint}`, transition: "all .15s" }} />
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+        {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => key(d, () => value.length < max && onChange(value + d), d))}
+        <div />
+        {key("0", () => value.length < max && onChange(value + "0"), "0")}
+        {key(<DeleteIcon size={19} />, () => onChange(value.slice(0, -1)), "Delete")}
+      </div>
+    </div>
+  );
+}
+
+// Enter a new PIN, then confirm it.
+function NewPinFlow({ title, subtitle, onDone, onBack }) {
+  const [step, setStep] = useState("enter");
+  const [first, setFirst] = useState("");
+  const [value, setValue] = useState("");
   const [error, setError] = useState("");
+  const [shake, setShake] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const submit = async () => {
-    if (pin.length < 4) { setError("Use at least 4 digits."); return; }
-    if (pin !== confirm) { setError("PINs don't match."); return; }
+  const bad = (msg) => { setError(msg); setShake(true); setTimeout(() => setShake(false), 400); setValue(""); };
+  const next = async () => {
+    if (value.length < 4) return bad("Use at least 4 digits.");
+    if (step === "enter") { setFirst(value); setValue(""); setError(""); setStep("confirm"); return; }
+    if (value !== first) { setStep("enter"); setFirst(""); return bad("PINs didn't match — start again."); }
     setBusy(true);
-    const hash = await hashPin(pin);
-    onDone(hash);
+    await onDone(value);
+    setBusy(false);
+  };
+  return (
+    <>
+      <div className="flex items-center gap-3 mb-4"><BrandMark /><div>
+        <h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>{title}</h1>
+        <div style={{ color: T.muted, fontSize: 12.5 }}>{step === "enter" ? subtitle : "Enter it once more to confirm"}</div>
+      </div></div>
+      <PinPad value={value} onChange={(v) => { setValue(v); setError(""); }} onSubmit={next} shake={shake} disabled={busy} />
+      <div style={{ minHeight: 22, color: T.neg, fontSize: 12.5, textAlign: "center", margin: "12px 0 6px" }}>{error}</div>
+      <PrimaryButton onClick={next} disabled={busy || value.length < 4}>{step === "enter" ? "Continue" : "Confirm PIN"}</PrimaryButton>
+      {onBack && <div className="text-center mt-3"><LinkButton onClick={onBack}>Back</LinkButton></div>}
+    </>
+  );
+}
+
+function PinSetup({ onDone }) {
+  const [pinHash, setPinHash] = useState(null);
+  const [code, setCode] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* best effort */ }
   };
 
+  if (!pinHash) {
+    return (
+      <AuthShell>
+        <NewPinFlow
+          title="Create your PIN"
+          subtitle="Keeps your records private"
+          onDone={async (pin) => { setPinHash(await hashPin(pin)); setCode(genRecoveryCode()); }}
+        />
+      </AuthShell>
+    );
+  }
   return (
     <AuthShell>
-      <div style={{ width: 40, height: 40, borderRadius: 10, background: "#1F2A1D", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
-        <Lock size={18} color="#F7F8F5" />
+      <div className="flex items-center gap-3 mb-3"><BrandMark /><h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>Save your recovery code</h1></div>
+      <div style={{ color: T.muted, fontSize: 12.5, lineHeight: 1.5, marginBottom: 14 }}>
+        If you forget your PIN, this code is the only way back in without erasing your data. Keep it somewhere safe — it won't be shown again.
       </div>
-      <h1 className="font-display" style={{ color: "#1F2A1D", fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Set a PIN</h1>
-      <div style={{ color: "#8A9186", fontSize: 13, marginBottom: 18 }}>
-        Personal money manager — set a PIN to keep your records private on this device.
-      </div>
-      <div className="flex flex-col gap-2 mb-3">
-        <FieldInput type="password" inputMode="numeric" placeholder="New PIN" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} />
-        <FieldInput type="password" inputMode="numeric" placeholder="Confirm PIN" value={confirm} onChange={(e) => setConfirm(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => e.key === "Enter" && submit()} />
-      </div>
-      {error && <div style={{ color: "#C05C4A", fontSize: 12, marginBottom: 10 }}>{error}</div>}
-      <button disabled={busy} onClick={submit} className="w-full" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 10, padding: "12px 16px", fontWeight: 700, fontSize: 13.5, opacity: busy ? 0.6 : 1 }}>
-        Set PIN
+      <div className="mono" style={{ background: T.soft, border: `1px dashed ${T.faint}`, borderRadius: 12, padding: "14px 10px", textAlign: "center", fontSize: 17, fontWeight: 700, letterSpacing: 1.5, color: T.ink, userSelect: "all" }}>{code}</div>
+      <button onClick={copy} className="flex items-center justify-center gap-2 w-full" style={{ marginTop: 10, background: T.soft, color: T.ink, border: `1px solid ${T.line}`, borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>
+        <Copy size={14} /> {copied ? "Copied!" : "Copy code"}
       </button>
+      <label className="flex items-center gap-2" style={{ margin: "14px 0", fontSize: 12.5, color: T.text2, cursor: "pointer" }}>
+        <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} /> I've saved my recovery code
+      </label>
+      <PrimaryButton disabled={!saved} onClick={async () => onDone({ pinHash, recoveryHash: await hashRecovery(code) })}>Start using Money Manager</PrimaryButton>
+      <div className="text-center mt-3"><LinkButton onClick={() => onDone({ pinHash })}>Skip for now (you can create one in Settings)</LinkButton></div>
     </AuthShell>
   );
 }
 
-function PinUnlock({ credentials, onUnlock }) {
+const FAIL_KEY = "finance_pin_fails"; // per-device wrong-PIN counter
+const readFails = () => { try { return JSON.parse(localStorage.getItem(FAIL_KEY)) || { count: 0, until: 0 }; } catch { return { count: 0, until: 0 }; } };
+
+function PinUnlock({ credentials, onUnlock, onResetPin, onErase }) {
+  const [view, setView] = useState("pin"); // pin | recover | newpin | erase
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
+  const [shake, setShake] = useState(false);
+  const [fails, setFails] = useState(readFails);
+  const [now, setNow] = useState(Date.now());
+  const [codeInput, setCodeInput] = useState("");
+  const [eraseText, setEraseText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const locked = fails.until > now;
+  const secsLeft = Math.max(0, Math.ceil((fails.until - now) / 1000));
+
+  useEffect(() => {
+    if (!locked) return;
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [locked]);
 
   const submit = async () => {
-    const hash = await hashPin(pin);
-    if (hash === credentials.pinHash) onUnlock();
-    else { setError("Incorrect PIN."); setPin(""); }
+    if (locked || pin.length < 4) return;
+    if ((await hashPin(pin)) === credentials.pinHash) { localStorage.removeItem(FAIL_KEY); onUnlock(); return; }
+    const count = fails.count + 1;
+    const until = count % 5 === 0 ? Date.now() + Math.min(30 * 2 ** (count / 5 - 1), 900) * 1000 : 0;
+    const next = { count, until };
+    localStorage.setItem(FAIL_KEY, JSON.stringify(next));
+    setFails(next);
+    setNow(Date.now());
+    setPin("");
+    setShake(true);
+    setTimeout(() => setShake(false), 400);
+    const left = 5 - (count % 5);
+    setError(until ? "Too many wrong attempts." : left <= 2 ? `Incorrect PIN · ${left} ${left === 1 ? "try" : "tries"} left before a short lock` : "Incorrect PIN.");
   };
+
+  const verifyCode = async () => {
+    setBusy(true);
+    const ok = credentials.recoveryHash && (await hashRecovery(codeInput)) === credentials.recoveryHash;
+    setBusy(false);
+    if (ok) { setError(""); setView("newpin"); } else setError("That recovery code doesn't match.");
+  };
+
+  const go = (v) => { setView(v); setError(""); setPin(""); };
+
+  if (view === "newpin") {
+    return (
+      <AuthShell>
+        <NewPinFlow
+          title="Choose a new PIN"
+          subtitle="Recovery code accepted"
+          onBack={() => go("pin")}
+          onDone={async (p) => { localStorage.removeItem(FAIL_KEY); onResetPin(await hashPin(p)); onUnlock(); }}
+        />
+      </AuthShell>
+    );
+  }
+
+  if (view === "recover") {
+    return (
+      <AuthShell>
+        <div className="flex items-center gap-3 mb-3"><BrandMark /><h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>Forgot your PIN?</h1></div>
+        {credentials.recoveryHash ? (
+          <>
+            <div style={{ color: T.muted, fontSize: 12.5, lineHeight: 1.5, marginBottom: 12 }}>Enter the recovery code you saved when you set up your PIN.</div>
+            <FieldInput autoFocus className="mono" placeholder="XXXX-XXXX-XXXX-XXXX" value={codeInput} onChange={(e) => { setCodeInput(formatRecovery(e.target.value)); setError(""); }} onKeyDown={(e) => e.key === "Enter" && verifyCode()} style={{ width: "100%", textAlign: "center", letterSpacing: 1.5, fontSize: 15, padding: "12px 10px" }} />
+            <div style={{ minHeight: 22, color: T.neg, fontSize: 12.5, margin: "8px 0" }}>{error}</div>
+            <PrimaryButton disabled={busy || codeInput.length < 19} onClick={verifyCode}>Verify code</PrimaryButton>
+          </>
+        ) : (
+          <div style={{ background: T.soft, borderRadius: 12, padding: 12, color: T.text2, fontSize: 12.5, lineHeight: 1.5 }}>
+            No recovery code was created for this PIN, so it can't be reset. Your only option is to erase everything and start fresh.
+          </div>
+        )}
+        <div className="flex justify-between mt-4">
+          <LinkButton onClick={() => go("pin")}>Back</LinkButton>
+          <LinkButton onClick={() => go("erase")} style={{ color: T.neg }}>Erase data &amp; start over</LinkButton>
+        </div>
+      </AuthShell>
+    );
+  }
+
+  if (view === "erase") {
+    return (
+      <AuthShell>
+        <div className="flex items-center gap-3 mb-3"><BrandMark /><h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>Erase everything?</h1></div>
+        <div style={{ color: T.text2, fontSize: 12.5, lineHeight: 1.55, marginBottom: 12 }}>
+          This permanently deletes all accounts, transactions, budgets, bills and debts for everyone using this app, then lets you set a new PIN. It can't be undone.
+        </div>
+        <FieldInput placeholder="Type ERASE to confirm" value={eraseText} onChange={(e) => setEraseText(e.target.value)} style={{ width: "100%", marginBottom: 12 }} />
+        <PrimaryButton disabled={eraseText !== "ERASE" || busy} style={{ background: T.neg }} onClick={async () => { setBusy(true); await onErase(); }}>
+          {busy ? "Erasing…" : "Erase all data"}
+        </PrimaryButton>
+        <div className="text-center mt-3"><LinkButton onClick={() => go("pin")}>Cancel</LinkButton></div>
+      </AuthShell>
+    );
+  }
 
   return (
     <AuthShell>
-      <div style={{ width: 40, height: 40, borderRadius: 10, background: "#1F2A1D", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
-        <Lock size={18} color="#F7F8F5" />
+      <div className="flex items-center gap-3 mb-4"><BrandMark /><div>
+        <h1 className="font-display" style={{ color: T.ink, fontSize: 20, fontWeight: 800 }}>Welcome back</h1>
+        <div style={{ color: T.muted, fontSize: 12.5 }}>Enter your PIN to unlock</div>
+      </div></div>
+      <PinPad value={pin} onChange={(v) => { setPin(v); setError(""); }} onSubmit={submit} shake={shake} disabled={locked} />
+      <div style={{ minHeight: 22, color: T.neg, fontSize: 12.5, textAlign: "center", margin: "12px 0 6px" }}>
+        {locked ? `Locked for ${secsLeft}s — try again soon.` : error}
       </div>
-      <h1 className="font-display" style={{ color: "#1F2A1D", fontSize: 22, fontWeight: 800, marginBottom: 14 }}>Enter your PIN</h1>
-      <div className="flex flex-col gap-2 mb-3">
-        <FieldInput autoFocus type="password" inputMode="numeric" placeholder="PIN" value={pin} onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setError(""); }} onKeyDown={(e) => e.key === "Enter" && submit()} />
-      </div>
-      {error && <div style={{ color: "#C05C4A", fontSize: 12, marginBottom: 10 }}>{error}</div>}
-      <button onClick={submit} className="w-full" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 10, padding: "12px 16px", fontWeight: 700, fontSize: 13.5 }}>
-        Unlock
-      </button>
+      <PrimaryButton disabled={locked || pin.length < 4} onClick={submit}>Unlock</PrimaryButton>
+      <div className="text-center mt-3"><LinkButton onClick={() => go("recover")}>Forgot PIN?</LinkButton></div>
     </AuthShell>
+  );
+}
+
+// ---- Settings ---------------------------------------------------------------
+
+function Segmented({ options, value, onChange }) {
+  return (
+    <div style={{ display: "flex", background: T.soft, borderRadius: 10, padding: 3, gap: 2 }}>
+      {options.map((o) => (
+        <button key={o.id} onClick={() => onChange(o.id)} style={{ flex: 1, padding: "6px 10px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, background: value === o.id ? T.card : "transparent", color: value === o.id ? T.ink : T.muted, boxShadow: value === o.id ? T.shadow : "none" }}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Switch({ on, onChange }) {
+  return (
+    <button role="switch" aria-checked={on} onClick={() => onChange(!on)} style={{ width: 42, height: 24, borderRadius: 99, background: on ? T.pos : T.faint, position: "relative", flexShrink: 0 }}>
+      <span style={{ position: "absolute", top: 3, left: on ? 21 : 3, width: 18, height: 18, borderRadius: 99, background: "#fff", transition: "left .18s ease" }} />
+    </button>
+  );
+}
+
+function SettingsSection({ title, children }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase", color: T.muted, marginBottom: 8 }}>{title}</div>
+      <div className="flex flex-col gap-3">{children}</div>
+    </div>
+  );
+}
+function SettingsRow({ label, hint, children }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink }}>{label}</div>
+        {hint && <div style={{ fontSize: 11.5, color: T.muted, marginTop: 1 }}>{hint}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+function SoftButton({ children, danger, ...rest }) {
+  return (
+    <button {...rest} className="flex items-center justify-center gap-2" style={{ background: T.soft, color: danger ? T.neg : T.ink, border: `1px solid ${T.line}`, borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 600, ...rest.style }}>
+      {children}
+    </button>
+  );
+}
+
+function SettingsModal({ prefs, setPrefs, hasRecovery, onChangePin, onCreateRecovery, onBackup, onRestore, onExportCsv, onErase, onLock, onClose }) {
+  const [pinForm, setPinForm] = useState({ cur: "", next: "", confirm: "" });
+  const [pinMsg, setPinMsg] = useState(null);
+  const [newCode, setNewCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState(null);
+  const [eraseOpen, setEraseOpen] = useState(false);
+  const [eraseText, setEraseText] = useState("");
+  const fileRef = useRef(null);
+  const digits = (v) => v.replace(/\D/g, "").slice(0, 8);
+
+  const savePin = async () => {
+    if (pinForm.next.length < 4) return setPinMsg({ ok: false, text: "New PIN needs at least 4 digits." });
+    if (pinForm.next !== pinForm.confirm) return setPinMsg({ ok: false, text: "New PINs don't match." });
+    const err = await onChangePin(pinForm.cur, pinForm.next);
+    if (err) return setPinMsg({ ok: false, text: err });
+    setPinForm({ cur: "", next: "", confirm: "" });
+    setPinMsg({ ok: true, text: "PIN updated." });
+  };
+  const copyCode = async () => {
+    try { await navigator.clipboard.writeText(newCode); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* best effort */ }
+  };
+  const pickFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) setRestoreMsg(await onRestore(file));
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: T.scrim, zIndex: 1200, display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0 }} className="sm:items-center sm:p-4">
+      <div onClick={(e) => e.stopPropagation()} className="sheet-in" style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: "22px 22px 0 0", padding: 20, width: "100%", maxWidth: 460, maxHeight: "90vh", overflowY: "auto", boxShadow: T.shadow }}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="font-display" style={{ fontWeight: 800, fontSize: 18, color: T.ink }}>Settings</div>
+          <button onClick={onClose} aria-label="Close" style={{ color: T.muted }}><X size={18} /></button>
+        </div>
+
+        <SettingsSection title="Appearance & privacy">
+          <Segmented value={prefs.theme} onChange={(theme) => setPrefs({ theme })} options={[{ id: "auto", label: "Auto" }, { id: "light", label: "Sage light" }, { id: "dark", label: "Forest night" }]} />
+          <SettingsRow label="Hide amounts" hint="Masks every balance on screen"><Switch on={prefs.hide} onChange={(hide) => setPrefs({ hide })} /></SettingsRow>
+          <SettingsRow label="Auto-lock" hint="Lock after you've been idle">
+            <FieldSelect value={prefs.autoLockMin} onChange={(e) => setPrefs({ autoLockMin: Number(e.target.value) })} style={{ width: 110 }}>
+              <option value={0}>Never</option><option value={1}>1 min</option><option value={5}>5 min</option><option value={15}>15 min</option><option value={30}>30 min</option>
+            </FieldSelect>
+          </SettingsRow>
+          <SoftButton onClick={onLock}><Lock size={14} /> Lock now</SoftButton>
+        </SettingsSection>
+
+        <SettingsSection title="Security">
+          <div className="flex flex-col gap-2">
+            <FieldInput type="password" inputMode="numeric" placeholder="Current PIN" value={pinForm.cur} onChange={(e) => setPinForm({ ...pinForm, cur: digits(e.target.value) })} />
+            <div className="grid grid-cols-2 gap-2">
+              <FieldInput type="password" inputMode="numeric" placeholder="New PIN" value={pinForm.next} onChange={(e) => setPinForm({ ...pinForm, next: digits(e.target.value) })} />
+              <FieldInput type="password" inputMode="numeric" placeholder="Confirm" value={pinForm.confirm} onChange={(e) => setPinForm({ ...pinForm, confirm: digits(e.target.value) })} />
+            </div>
+            {pinMsg && <div style={{ fontSize: 12.5, color: pinMsg.ok ? T.pos : T.neg }}>{pinMsg.text}</div>}
+            <SoftButton onClick={savePin} disabled={!pinForm.cur || !pinForm.next}><KeyRound size={14} /> Change PIN</SoftButton>
+          </div>
+          <SettingsRow label="Recovery code" hint={hasRecovery ? "Set — lets you reset a forgotten PIN" : "Not set — a forgotten PIN can't be reset"}>
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: hasRecovery ? T.pos : T.warn }}>{hasRecovery ? "Active" : "Missing"}</span>
+          </SettingsRow>
+          {newCode ? (
+            <div style={{ background: T.soft, borderRadius: 12, padding: 12 }}>
+              <div className="mono" style={{ textAlign: "center", fontSize: 16, fontWeight: 700, letterSpacing: 1.5, color: T.ink, userSelect: "all" }}>{newCode}</div>
+              <div style={{ fontSize: 11.5, color: T.muted, margin: "8px 0", lineHeight: 1.45 }}>Save this now — it won't be shown again, and any older code no longer works.</div>
+              <SoftButton onClick={copyCode} style={{ width: "100%" }}><Copy size={14} /> {copied ? "Copied!" : "Copy code"}</SoftButton>
+            </div>
+          ) : (
+            <SoftButton onClick={async () => setNewCode(await onCreateRecovery())}><ShieldCheck size={14} /> {hasRecovery ? "Generate a new recovery code" : "Create recovery code"}</SoftButton>
+          )}
+        </SettingsSection>
+
+        <SettingsSection title="Your data">
+          <div className="grid grid-cols-2 gap-2">
+            <SoftButton onClick={onBackup}><Download size={14} /> Backup</SoftButton>
+            <SoftButton onClick={() => fileRef.current?.click()}><Upload size={14} /> Restore</SoftButton>
+          </div>
+          <input ref={fileRef} type="file" accept="application/json,.json" onChange={pickFile} style={{ display: "none" }} />
+          {restoreMsg && <div style={{ fontSize: 12.5, color: restoreMsg.ok ? T.pos : T.neg }}>{restoreMsg.text}</div>}
+          <SoftButton onClick={onExportCsv}><FileSpreadsheet size={14} /> Export transactions (CSV)</SoftButton>
+          <div style={{ fontSize: 11.5, color: T.muted, lineHeight: 1.45 }}>Backups are plain JSON files — keep them somewhere private. Restoring replaces your current data (your PIN is kept).</div>
+        </SettingsSection>
+
+        <SettingsSection title="Danger zone">
+          {!eraseOpen ? (
+            <SoftButton danger onClick={() => setEraseOpen(true)}><Trash2 size={14} /> Erase all data…</SoftButton>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <div style={{ fontSize: 12.5, color: T.text2, lineHeight: 1.5 }}>This deletes everything, including your PIN. Download a backup first.</div>
+              <FieldInput placeholder="Type ERASE to confirm" value={eraseText} onChange={(e) => setEraseText(e.target.value)} />
+              <SoftButton danger disabled={eraseText !== "ERASE"} onClick={onErase}>Erase everything</SoftButton>
+            </div>
+          )}
+        </SettingsSection>
+      </div>
+    </div>
   );
 }
 
@@ -623,13 +1153,13 @@ function InstallBanner({ onInstall, onDismiss, ios }) {
       style={{
         position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 999,
         maxWidth: 420, margin: "0 auto",
-        background: "#1F2A1D", color: "#F7F8F5", borderRadius: 14,
+        background: T.ink, color: T.bg, borderRadius: 14,
         padding: "12px 14px", boxShadow: "0 10px 30px rgba(31,42,29,0.35)",
         display: "flex", alignItems: "center", gap: 10,
       }}
     >
-      <div style={{ width: 30, height: 30, borderRadius: 8, background: "#4C8B5C", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        {ios ? <Share size={15} color="#F7F8F5" /> : <Download size={15} color="#F7F8F5" />}
+      <div style={{ width: 30, height: 30, borderRadius: 8, background: T.pos, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        {ios ? <Share size={15} color={T.bg} /> : <Download size={15} color={T.bg} />}
       </div>
       <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.35 }}>
         {ios ? (
@@ -639,18 +1169,26 @@ function InstallBanner({ onInstall, onDismiss, ios }) {
         )}
       </div>
       {onInstall && (
-        <button onClick={onInstall} style={{ background: "#4C8B5C", color: "#F7F8F5", fontSize: 12, fontWeight: 700, borderRadius: 8, padding: "7px 12px", flexShrink: 0 }}>
+        <button onClick={onInstall} style={{ background: T.pos, color: T.bg, fontSize: 12, fontWeight: 700, borderRadius: 8, padding: "7px 12px", flexShrink: 0 }}>
           Install
         </button>
       )}
-      <button onClick={onDismiss} style={{ color: "#B4BAAD", flexShrink: 0 }}>
+      <button onClick={onDismiss} style={{ color: T.faint, flexShrink: 0 }}>
         <X size={15} />
       </button>
     </div>
   );
 }
 
-function Header({ tab, setTab, netWorth, overdueBills }) {
+function IconButton({ children, label, onClick, active }) {
+  return (
+    <button onClick={onClick} aria-label={label} title={label} style={{ width: 36, height: 36, borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", background: active ? T.soft : T.card, color: active ? T.pos : T.text2, border: `1px solid ${T.line}`, boxShadow: T.shadow }}>
+      {children}
+    </button>
+  );
+}
+
+function Header({ tab, setTab, netWorth, overdueBills, prefs, setPrefs, resolvedTheme, onSettings, onLock }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "transactions", label: "Transactions", icon: List },
@@ -660,43 +1198,51 @@ function Header({ tab, setTab, netWorth, overdueBills }) {
     { id: "bills", label: "Bills", icon: Repeat, badge: overdueBills },
     { id: "reports", label: "Reports", icon: TrendingUp },
   ];
+  const hr = new Date().getHours();
+  const greeting = hr < 5 ? "Still up?" : hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : hr < 21 ? "Good evening" : "Good night";
   return (
     <div className="mb-6">
-      <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
-        <div>
-          <h1 className="font-display" style={{ color: "#1F2A1D", fontSize: 26, fontWeight: 800, letterSpacing: -0.5 }}>
-            Money Manager
-          </h1>
-          <div style={{ color: "#8A9186", fontSize: 12.5, marginTop: 1 }}>Track accounts, debts & daily flow</div>
-        </div>
-        <div className="card-hover" style={{ background: "#FFFFFF", border: "1px solid #E7E9E2", borderRadius: 12, padding: "8px 16px", boxShadow: "0 2px 8px rgba(31,42,29,0.04)" }}>
-          <div style={{ color: "#8A9186", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.5 }}>Net worth</div>
-          <div className="font-display" style={{ color: netWorth < 0 ? "#C05C4A" : "#1F2A1D", fontSize: 19, fontWeight: 700 }}>
-            {money(netWorth)}
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="flex items-center gap-3" style={{ minWidth: 0 }}>
+          <BrandMark size={42} />
+          <div style={{ minWidth: 0 }}>
+            <h1 className="font-display" style={{ color: T.ink, fontSize: 21, fontWeight: 800, letterSpacing: -0.4, lineHeight: 1.15 }}>Money Manager</h1>
+            <div style={{ color: T.muted, fontSize: 12.5 }}>{greeting} · <span style={{ color: netWorth < 0 ? T.neg : T.text2, fontWeight: 600 }}>{money(netWorth)}</span></div>
           </div>
         </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <IconButton label={prefs.hide ? "Show amounts" : "Hide amounts"} active={prefs.hide} onClick={() => setPrefs({ hide: !prefs.hide })}>
+            {prefs.hide ? <EyeOff size={16} /> : <Eye size={16} />}
+          </IconButton>
+          <IconButton label={resolvedTheme === "dark" ? "Switch to light" : "Switch to dark"} onClick={() => setPrefs({ theme: resolvedTheme === "dark" ? "light" : "dark" })}>
+            {resolvedTheme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </IconButton>
+          <IconButton label="Settings" onClick={onSettings}><Settings size={16} /></IconButton>
+          <IconButton label="Lock" onClick={onLock}><Lock size={16} /></IconButton>
+        </div>
       </div>
-      <div className="flex gap-1.5 overflow-x-auto pb-1">
+      <div className="flex gap-1.5 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
         {tabs.map(({ id, label, icon: Icon, badge }) => {
           const active = tab === id;
           return (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className="flex items-center gap-1.5 px-3 py-1.5 flex-shrink-0"
+              className="flex items-center gap-1.5 px-3.5 py-2 flex-shrink-0"
               style={{
-                background: active ? "#1F2A1D" : "#FFFFFF",
-                color: active ? "#F7F8F5" : "#4A5247",
-                border: `1px solid ${active ? "#1F2A1D" : "#E7E9E2"}`,
-                borderRadius: 8,
+                background: active ? T.pos : T.card,
+                color: active ? "#fff" : T.text2,
+                border: `1px solid ${active ? T.pos : T.line}`,
+                borderRadius: 999,
                 fontSize: 13,
                 fontWeight: 600,
+                boxShadow: active ? "none" : T.shadow,
               }}
             >
               <Icon size={14} />
               {label}
               {badge > 0 && (
-                <span style={{ background: active ? "#F7F8F5" : "#C05C4A", color: active ? "#1F2A1D" : "#fff", fontSize: 10, borderRadius: 8, padding: "1px 5px", fontWeight: 700 }}>
+                <span style={{ background: active ? "#fff" : T.neg, color: active ? T.pos : "#fff", fontSize: 10, borderRadius: 8, padding: "1px 5px", fontWeight: 700 }}>
                   {badge}
                 </span>
               )}
@@ -711,15 +1257,15 @@ function Header({ tab, setTab, netWorth, overdueBills }) {
 function StatCard({ label, value, color }) {
   return (
     <div>
-      <div style={{ color: "#8A9186", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
-      <div className="font-display" style={{ color: color || "#1F2A1D", fontSize: 19, fontWeight: 700 }}>{value}</div>
+      <div style={{ color: T.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
+      <div className="font-display" style={{ color: color || T.ink, fontSize: 19, fontWeight: 700 }}>{value}</div>
     </div>
   );
 }
 
 function EmptyState({ icon: Icon, text }) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 gap-2" style={{ color: "#B4BAAD", gridColumn: "1 / -1" }}>
+    <div className="flex flex-col items-center justify-center py-12 gap-2" style={{ color: T.faint, gridColumn: "1 / -1" }}>
       <Icon size={24} />
       <div style={{ fontSize: 13 }}>{text}</div>
     </div>
@@ -727,21 +1273,21 @@ function EmptyState({ icon: Icon, text }) {
 }
 
 function FieldInput(props) {
-  return <input {...props} style={{ background: "#F7F8F5", color: "#1F2A1D", border: "1px solid #E7E9E2", borderRadius: 8, fontSize: 13, padding: "8px 10px", ...props.style }} />;
+  return <input {...props} style={{ background: T.bg, color: T.ink, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 13, padding: "8px 10px", ...props.style }} />;
 }
 function FieldSelect(props) {
-  return <select {...props} style={{ background: "#F7F8F5", color: "#1F2A1D", border: "1px solid #E7E9E2", borderRadius: 8, fontSize: 13, padding: "8px 10px", ...props.style }} />;
+  return <select {...props} style={{ background: T.bg, color: T.ink, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 13, padding: "8px 10px", ...props.style }} />;
 }
 function Card({ children, style, className }) {
   return (
-    <div className={className} style={{ background: "#FFFFFF", border: "1px solid #E7E9E2", borderRadius: 14, padding: 16, boxShadow: "0 2px 8px rgba(31,42,29,0.04)", ...style }}>
+    <div className={className} style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, padding: 16, boxShadow: T.shadow, ...style }}>
       {children}
     </div>
   );
 }
 function ProgressBar({ pct, color }) {
   return (
-    <div style={{ background: "#EDEFEA", borderRadius: 6, height: 7, overflow: "hidden" }}>
+    <div style={{ background: T.soft, borderRadius: 6, height: 7, overflow: "hidden" }}>
       <div style={{ width: `${Math.min(100, pct)}%`, background: color, height: "100%", borderRadius: 6 }} />
     </div>
   );
@@ -1044,6 +1590,27 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
   const recent = transactions.slice(0, 6);
   const netThisMonth = round2(monthIncome - monthExpense);
 
+  // Insight tiles
+  const nowD = new Date();
+  const daysInMonth = new Date(nowD.getFullYear(), nowD.getMonth() + 1, 0).getDate();
+  const prevD = new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1);
+  const prevKey = `${prevD.getFullYear()}-${String(prevD.getMonth() + 1).padStart(2, "0")}`;
+  const prevExpense = round2(transactions.filter((t) => t.type === "expense" && monthKeyOf(t.date) === prevKey).reduce((s, t) => s + t.amount, 0));
+  const spendDelta = prevExpense > 0 ? Math.round(((monthExpense - prevExpense) / prevExpense) * 100) : null;
+  const savingsRate = monthIncome > 0 ? Math.round(((monthIncome - monthExpense) / monthIncome) * 100) : null;
+  const projected = round2((monthExpense / Math.max(1, nowD.getDate())) * daysInMonth);
+  const catTotals = {};
+  transactions
+    .filter((t) => t.type === "expense" && monthKeyOf(t.date) === monthKeyOf(todayISO()))
+    .forEach((t) => { catTotals[t.category || "Other"] = (catTotals[t.category || "Other"] || 0) + t.amount; });
+  const topCat = Object.entries(catTotals).sort((a, b) => b[1] - a[1])[0];
+  const insights = [
+    { label: "Saved", icon: PiggyBank, value: savingsRate === null ? "—" : `${savingsRate}%`, hint: savingsRate === null ? "No income yet" : "of income kept", tone: savingsRate === null ? null : savingsRate < 0 ? T.neg : T.pos },
+    { label: "vs last month", icon: spendDelta !== null && spendDelta > 0 ? TrendingUp : TrendingDown, value: spendDelta === null ? "—" : `${spendDelta > 0 ? "+" : ""}${spendDelta}%`, hint: spendDelta === null ? "No data last month" : "spending", tone: spendDelta === null ? null : spendDelta > 0 ? T.neg : T.pos },
+    { label: "Top category", icon: Sparkles, value: topCat ? topCat[0] : "—", hint: topCat ? money(round2(topCat[1])) : "No spending yet" },
+    { label: "Month pace", icon: CalendarDays, value: monthExpense > 0 ? money(projected) : "—", hint: "projected spend" },
+  ];
+
   const budgetRows = budgets
     .map((b) => {
       const spent = round2(
@@ -1056,34 +1623,53 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
 
   return (
     <div className="flex flex-col gap-4">
-      <Card>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <StatCard label="Net worth" value={money(netWorth)} color={netWorth < 0 ? "#C05C4A" : "#1F2A1D"} />
-          <StatCard label="Income (mo)" value={money(monthIncome)} color="#4C8B5C" />
-          <StatCard label="Expense (mo)" value={money(monthExpense)} color="#C05C4A" />
-          <StatCard label="Net (mo)" value={money(netThisMonth)} color={netThisMonth < 0 ? "#C05C4A" : "#4C8B5C"} />
+      <div className="fade-up" style={{ background: `linear-gradient(135deg, ${T.heroA}, ${T.heroB})`, borderRadius: 20, padding: 20, color: "#fff", boxShadow: T.shadow }}>
+        <div style={{ fontSize: 11.5, opacity: 0.8, letterSpacing: 0.8, textTransform: "uppercase" }}>Net worth</div>
+        <div className="font-display" style={{ fontSize: 32, fontWeight: 800, letterSpacing: -0.8, margin: "2px 0 14px" }}>{money(netWorth)}</div>
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { label: "Income", value: money(monthIncome), icon: ArrowDownRight },
+            { label: "Spent", value: money(monthExpense), icon: ArrowUpRight },
+            { label: "Net", value: money(netThisMonth), icon: TrendingUp },
+          ].map(({ label, value, icon: Icon }) => (
+            <div key={label} style={{ background: "rgba(255,255,255,0.14)", borderRadius: 12, padding: "9px 10px", minWidth: 0 }}>
+              <div className="flex items-center gap-1" style={{ fontSize: 10.5, opacity: 0.85, textTransform: "uppercase", letterSpacing: 0.5 }}><Icon size={11} /> {label}</div>
+              <div className="font-display" style={{ fontSize: 14.5, fontWeight: 700, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
+            </div>
+          ))}
         </div>
-      </Card>
+        <div style={{ fontSize: 11, opacity: 0.8, marginTop: 10 }}>This month so far</div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {insights.map(({ label, value, hint, icon: Icon, tone }) => (
+          <div key={label} className="card-hover fade-up" style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 16, padding: 12, boxShadow: T.shadow, minWidth: 0 }}>
+            <div className="flex items-center gap-1.5" style={{ color: T.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}><Icon size={12} /> {label}</div>
+            <div className="font-display" style={{ color: tone || T.ink, fontSize: 17, fontWeight: 800, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
+            <div style={{ color: T.muted, fontSize: 11.5, marginTop: 1 }}>{hint}</div>
+          </div>
+        ))}
+      </div>
 
       <div className="grid sm:grid-cols-2 gap-4">
         <Card>
           <div className="flex items-center justify-between mb-3">
-            <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D" }}>Debts Summary</div>
-            <button onClick={() => setTab("debts")} style={{ fontSize: 11.5, color: "#8A9186", textDecoration: "underline" }}>manage debts</button>
+            <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>Debts Summary</div>
+            <button onClick={() => setTab("debts")} style={{ fontSize: 11.5, color: T.muted, textDecoration: "underline" }}>manage debts</button>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <StatCard label="Owed to you" value={money(owedToMe)} color="#4C8B5C" />
-            <StatCard label="You owe" value={money(iOwe)} color="#C05C4A" />
+            <StatCard label="Owed to you" value={money(owedToMe)} color={T.pos} />
+            <StatCard label="You owe" value={money(iOwe)} color={T.neg} />
           </div>
         </Card>
 
         <Card>
           <div className="flex items-center justify-between mb-3">
-            <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D" }}>Upcoming bills</div>
-            <button onClick={() => setTab("bills")} style={{ fontSize: 11.5, color: "#8A9186", textDecoration: "underline" }}>view all</button>
+            <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>Upcoming bills</div>
+            <button onClick={() => setTab("bills")} style={{ fontSize: 11.5, color: T.muted, textDecoration: "underline" }}>view all</button>
           </div>
           {upcoming.length === 0 ? (
-            <div style={{ color: "#B4BAAD", fontSize: 12.5 }}>No recurring bills due soon.</div>
+            <div style={{ color: T.faint, fontSize: 12.5 }}>No recurring bills due soon.</div>
           ) : (
             <div className="flex flex-col gap-2">
               {upcoming.map((r) => {
@@ -1091,8 +1677,8 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
                 const overdue = d < 0;
                 return (
                   <div key={r.id} className="flex items-center justify-between" style={{ fontSize: 12.5 }}>
-                    <span style={{ color: "#1F2A1D" }}>{r.name}</span>
-                    <span style={{ color: overdue ? "#C05C4A" : "#8A9186", fontWeight: overdue ? 700 : 400 }}>
+                    <span style={{ color: T.ink }}>{r.name}</span>
+                    <span style={{ color: overdue ? T.neg : T.muted, fontWeight: overdue ? 700 : 400 }}>
                       {overdue ? `${Math.abs(d)}d overdue` : d === 0 ? "today" : `in ${d}d`} · {money(r.amount)}
                     </span>
                   </div>
@@ -1105,7 +1691,7 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
 
       {budgetRows.length > 0 && (
         <Card>
-          <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D", marginBottom: 10 }}>Budgets this month</div>
+          <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 10 }}>Budgets this month</div>
           <div className="flex flex-col gap-3">
             {budgetRows.map((b) => {
               const c = expCatInfo(b.category);
@@ -1113,10 +1699,10 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
               return (
                 <div key={b.id}>
                   <div className="flex items-center justify-between mb-1" style={{ fontSize: 12 }}>
-                    <span style={{ color: "#1F2A1D" }}>{b.category}</span>
-                    <span style={{ color: over ? "#C05C4A" : "#8A9186" }}>{money(b.spent)} / {money(b.limit)}</span>
+                    <span style={{ color: T.ink }}>{b.category}</span>
+                    <span style={{ color: over ? T.neg : T.muted }}>{money(b.spent)} / {money(b.limit)}</span>
                   </div>
-                  <ProgressBar pct={b.pct} color={over ? "#C05C4A" : b.pct >= 80 ? "#C79A3E" : c.color} />
+                  <ProgressBar pct={b.pct} color={over ? T.neg : b.pct >= 80 ? T.warn : c.color} />
                 </div>
               );
             })}
@@ -1126,11 +1712,11 @@ function DashboardTab({ accounts, transactions, budgets, recurring, netWorth, mo
 
       <Card>
         <div className="flex items-center justify-between mb-3">
-          <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D" }}>Recent activity</div>
-          <button onClick={() => setTab("transactions")} style={{ fontSize: 11.5, color: "#8A9186", textDecoration: "underline" }}>view all</button>
+          <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>Recent activity</div>
+          <button onClick={() => setTab("transactions")} style={{ fontSize: 11.5, color: T.muted, textDecoration: "underline" }}>view all</button>
         </div>
         {recent.length === 0 ? (
-          <div style={{ color: "#B4BAAD", fontSize: 12.5 }}>No transactions logged yet.</div>
+          <div style={{ color: T.faint, fontSize: 12.5 }}>No transactions logged yet.</div>
         ) : (
           <div className="flex flex-col gap-2">
             {recent.map((t) => (
@@ -1148,17 +1734,17 @@ function TxRow({ tx, accounts, compact, onEdit, onDelete }) {
   const c = isTransfer ? null : catInfo(tx.category, tx.type);
   const Icon = isTransfer ? ArrowRightLeft : c.icon;
   const accName = (id) => accounts.find((a) => a.id === id)?.name || "Deleted account";
-  const color = isTransfer ? "#8A9186" : tx.type === "income" ? "#4C8B5C" : "#C05C4A";
+  const color = isTransfer ? T.muted : tx.type === "income" ? T.pos : T.neg;
   return (
     <div className="flex items-center gap-3">
-      <div style={{ width: 30, height: 30, borderRadius: 8, background: (isTransfer ? "#8A9186" : c.color) + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        <Icon size={14} color={isTransfer ? "#8A9186" : c.color} />
+      <div style={{ width: 30, height: 30, borderRadius: 8, background: (isTransfer ? T.muted : c.color) + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Icon size={14} color={isTransfer ? T.muted : c.color} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, color: "#1F2A1D", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div style={{ fontSize: 13, color: T.ink, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {tx.note || (isTransfer ? "Transfer" : tx.category)}
         </div>
-        <div style={{ fontSize: 11, color: "#8A9186" }}>
+        <div style={{ fontSize: 11, color: T.muted }}>
           {isTransfer ? `${accName(tx.accountId)} → ${accName(tx.toAccountId)}` : accName(tx.accountId)} · {fmtDateShort(tx.date)}
         </div>
       </div>
@@ -1167,8 +1753,8 @@ function TxRow({ tx, accounts, compact, onEdit, onDelete }) {
       </div>
       {!compact && (
         <div className="flex items-center gap-1 flex-shrink-0">
-          <button onClick={() => onEdit(tx)} style={{ color: "#8A9186", padding: 4 }}><Pencil size={13} /></button>
-          <button onClick={() => onDelete(tx)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
+          <button onClick={() => onEdit(tx)} style={{ color: T.muted, padding: 4 }}><Pencil size={13} /></button>
+          <button onClick={() => onDelete(tx)} style={{ color: T.neg, padding: 4 }}><Trash2 size={13} /></button>
         </div>
       )}
     </div>
@@ -1199,8 +1785,8 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Accounts & Top-Up Wallets</div>
-        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: T.ink }}>Accounts & Top-Up Wallets</div>
+        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: T.ink, color: T.bg, borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
           <Plus size={14} /> Add account
         </button>
       </div>
@@ -1215,8 +1801,8 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
             <FieldInput type="number" step="0.01" placeholder="Starting balance" value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} />
           </div>
           <div className="flex gap-2 mt-3">
-            <button onClick={submitAdd} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
-            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>Cancel</button>
+            <button onClick={submitAdd} style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
+            <button onClick={() => setAdding(false)} style={{ color: T.muted, fontSize: 13 }}>Cancel</button>
           </div>
         </Card>
       )}
@@ -1237,8 +1823,8 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
                   </FieldSelect>
                   <FieldInput type="number" step="0.01" value={editForm.balance} onChange={(e) => setEditForm({ ...editForm, balance: e.target.value })} />
                   <div className="flex gap-2">
-                    <button onClick={saveEdit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
-                    <button onClick={() => setEditingId(null)} style={{ color: "#8A9186", fontSize: 12.5 }}>Cancel</button>
+                    <button onClick={saveEdit} style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
+                    <button onClick={() => setEditingId(null)} style={{ color: T.muted, fontSize: 12.5 }}>Cancel</button>
                   </div>
                 </div>
               </Card>
@@ -1251,16 +1837,16 @@ function AccountsTab({ accounts, addAccount, updateAccount, deleteAccount }) {
                   <Icon size={16} color={t.color} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{a.name}</div>
-                  <div style={{ fontSize: 11, color: "#8A9186" }}>{t.label}</div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: T.ink }}>{a.name}</div>
+                  <div style={{ fontSize: 11, color: T.muted }}>{t.label}</div>
                 </div>
               </div>
-              <div className="font-display" style={{ fontSize: 20, fontWeight: 700, color: a.balance < 0 ? "#C05C4A" : "#1F2A1D", marginBottom: 8 }}>
+              <div className="font-display" style={{ fontSize: 20, fontWeight: 700, color: a.balance < 0 ? T.neg : T.ink, marginBottom: 8 }}>
                 {money(a.balance)}
               </div>
               <div className="flex gap-1">
-                <button onClick={() => startEdit(a)} style={{ color: "#8A9186", padding: 4 }}><Pencil size={13} /></button>
-                <button onClick={() => deleteAccount(a.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
+                <button onClick={() => startEdit(a)} style={{ color: T.muted, padding: 4 }}><Pencil size={13} /></button>
+                <button onClick={() => deleteAccount(a.id)} style={{ color: T.neg, padding: 4 }}><Trash2 size={13} /></button>
               </div>
             </Card>
           );
@@ -1354,15 +1940,15 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
       <Card>
         <div className="flex gap-2 mb-3">
           {[
-            { id: "expense", label: "Expense", icon: ArrowDownRight, color: "#C05C4A" },
-            { id: "income", label: "Income / Top-Up", icon: ArrowUpRight, color: "#4C8B5C" },
+            { id: "expense", label: "Expense", icon: ArrowDownRight, color: T.neg },
+            { id: "income", label: "Income / Top-Up", icon: ArrowUpRight, color: T.pos },
             { id: "transfer", label: "Transfer (Top-up Wallet)", icon: ArrowRightLeft, color: "#4A7FB5" },
           ].map((opt) => (
             <button
               key={opt.id}
               onClick={() => { setType(opt.id); setError(""); setForm({ ...form, category: "", toAccountId: "" }); }}
               className="flex items-center gap-1.5"
-              style={{ background: type === opt.id ? opt.color : "#F7F8F5", color: type === opt.id ? "#fff" : "#4A5247", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
+              style={{ background: type === opt.id ? opt.color : T.bg, color: type === opt.id ? "#fff" : T.text2, borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
             >
               <opt.icon size={13} /> {opt.label}
             </button>
@@ -1372,7 +1958,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
         {/* Quick Tag Presets */}
         {type === "expense" && (
           <div className="flex items-center gap-1.5 mb-2.5 overflow-x-auto pb-1">
-            <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Quick:</span>
+            <span style={{ fontSize: 11, color: T.muted, flexShrink: 0 }}>Quick:</span>
             {quickPresets.map((p) => (
               <button
                 key={p.label}
@@ -1409,8 +1995,8 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
           <FieldInput placeholder="Note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
           <FieldInput type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
         </div>
-        {error && <div style={{ color: "#C05C4A", fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{error}</div>}
-        <button onClick={submit} style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
+        {error && <div style={{ color: T.neg, fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{error}</div>}
+        <button onClick={submit} style={{ background: T.ink, color: T.bg, borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 700 }}>
           Add {type}
         </button>
       </Card>
@@ -1457,11 +2043,11 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
       {(filterAccount !== "all" || filterCategory !== "all" || search) && (
         <Card style={{ padding: "10px 14px" }}>
           <div className="flex items-center gap-4 flex-wrap" style={{ fontSize: 12 }}>
-            <span style={{ color: "#8A9186" }}>
+            <span style={{ color: T.muted }}>
               {visible.length} matches
             </span>
-            {visibleExpenseTotal > 0 && <span style={{ color: "#C05C4A", fontWeight: 700 }}>Spent: {money(visibleExpenseTotal)}</span>}
-            {visibleIncomeTotal > 0 && <span style={{ color: "#4C8B5C", fontWeight: 700 }}>Received: {money(visibleIncomeTotal)}</span>}
+            {visibleExpenseTotal > 0 && <span style={{ color: T.neg, fontWeight: 700 }}>Spent: {money(visibleExpenseTotal)}</span>}
+            {visibleIncomeTotal > 0 && <span style={{ color: T.pos, fontWeight: 700 }}>Received: {money(visibleIncomeTotal)}</span>}
           </div>
         </Card>
       )}
@@ -1473,7 +2059,7 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
           <div className="flex flex-col gap-3">
             {visible.map((t) =>
               editingId === t.id ? (
-                <div key={t.id} style={{ borderTop: "1px solid #E7E9E2", paddingTop: 10 }}>
+                <div key={t.id} style={{ borderTop: `1px solid ${T.line}`, paddingTop: 10 }}>
                   <div className="grid sm:grid-cols-2 gap-2 mb-2">
                     <FieldSelect value={editForm.accountId} onChange={(e) => setEditForm({ ...editForm, accountId: e.target.value })}>
                       {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -1494,8 +2080,8 @@ function TransactionsTab({ accounts, transactions, addTransaction, updateTransac
                     <FieldInput type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} />
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => saveEdit(t)} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
-                    <button onClick={() => setEditingId(null)} style={{ color: "#8A9186", fontSize: 12.5 }}>Cancel</button>
+                    <button onClick={() => saveEdit(t)} style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
+                    <button onClick={() => setEditingId(null)} style={{ color: T.muted, fontSize: 12.5 }}>Cancel</button>
                   </div>
                 </div>
               ) : (
@@ -1518,7 +2104,7 @@ function BudgetsTab({ budgets, monthTx, upsertBudget, deleteBudget }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Monthly budgets</div>
+      <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: T.ink }}>Monthly budgets</div>
       <div className="grid sm:grid-cols-2 gap-4">
         {EXPENSE_CATEGORIES.map((c) => {
           const b = budgets.find((x) => x.category === c.name);
@@ -1532,10 +2118,10 @@ function BudgetsTab({ budgets, monthTx, upsertBudget, deleteBudget }) {
                 <div style={{ width: 26, height: 26, borderRadius: 7, background: c.color + "1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <c.icon size={13} color={c.color} />
                 </div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D", flex: 1 }}>{c.name}</div>
-                {b && <div style={{ fontSize: 12, color: over ? "#C05C4A" : "#8A9186" }}>{money(spent)} / {money(b.limit)}</div>}
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: T.ink, flex: 1 }}>{c.name}</div>
+                {b && <div style={{ fontSize: 12, color: over ? T.neg : T.muted }}>{money(spent)} / {money(b.limit)}</div>}
               </div>
-              {b && <div style={{ marginBottom: 10 }}><ProgressBar pct={pct} color={over ? "#C05C4A" : pct >= 80 ? "#C79A3E" : c.color} /></div>}
+              {b && <div style={{ marginBottom: 10 }}><ProgressBar pct={pct} color={over ? T.neg : pct >= 80 ? T.warn : c.color} /></div>}
               <div className="flex gap-2">
                 <FieldInput
                   type="number" step="0.01" placeholder="Monthly limit"
@@ -1545,12 +2131,12 @@ function BudgetsTab({ budgets, monthTx, upsertBudget, deleteBudget }) {
                 />
                 <button
                   onClick={() => upsertBudget(c.name, round2(Number(draft) || 0))}
-                  style={{ background: "#1F2A1D", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700 }}
+                  style={{ background: T.ink, color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700 }}
                 >
                   {b ? "Update" : "Set"}
                 </button>
                 {b && (
-                  <button onClick={() => { deleteBudget(c.name); setLimitDrafts({ ...limitDrafts, [c.name]: "" }); }} style={{ color: "#C05C4A", padding: 8 }}>
+                  <button onClick={() => { deleteBudget(c.name); setLimitDrafts({ ...limitDrafts, [c.name]: "" }); }} style={{ color: T.neg, padding: 8 }}>
                     <Trash2 size={14} />
                   </button>
                 )}
@@ -1594,8 +2180,8 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Recurring bills & subscriptions</div>
-        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: T.ink }}>Recurring bills & subscriptions</div>
+        <button onClick={() => setAdding((v) => !v)} className="flex items-center gap-1.5" style={{ background: T.ink, color: T.bg, borderRadius: 9, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
           <Plus size={14} /> Add bill
         </button>
       </div>
@@ -1627,8 +2213,8 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
             <FieldInput type="date" value={form.nextDue} onChange={(e) => setForm({ ...form, nextDue: e.target.value })} />
           </div>
           <div className="flex gap-2">
-            <button onClick={submit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
-            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>Cancel</button>
+            <button onClick={submit} style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
+            <button onClick={() => setAdding(false)} style={{ color: T.muted, fontSize: 13 }}>Cancel</button>
           </div>
         </Card>
       )}
@@ -1647,25 +2233,25 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
                   <c.icon size={16} color={c.color} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{r.name}</div>
-                  <div style={{ fontSize: 11.5, color: "#8A9186" }}>
-                    {accName} · {FREQ_LABEL[r.frequency]} · <span style={{ color: overdue ? "#C05C4A" : "#8A9186", fontWeight: overdue ? 700 : 400 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: T.ink }}>{r.name}</div>
+                  <div style={{ fontSize: 11.5, color: T.muted }}>
+                    {accName} · {FREQ_LABEL[r.frequency]} · <span style={{ color: overdue ? T.neg : T.muted, fontWeight: overdue ? 700 : 400 }}>
                       {overdue ? `${Math.abs(d)}d overdue` : d === 0 ? "due today" : `due in ${d}d`}
                     </span>
                   </div>
                 </div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: r.type === "income" ? "#4C8B5C" : "#C05C4A", flexShrink: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: r.type === "income" ? T.pos : T.neg, flexShrink: 0 }}>
                   {r.type === "income" ? "+" : "-"}{money(r.amount).replace("-", "")}
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-3">
-                <button onClick={() => markBillPaid(r)} className="flex items-center gap-1" style={{ background: "#1F2A1D", color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
+                <button onClick={() => markBillPaid(r)} className="flex items-center gap-1" style={{ background: T.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
                   <Check size={12} /> Mark {r.type === "income" ? "received" : "paid"}
                 </button>
-                <button onClick={() => updateRecurring(r.id, { active: !r.active })} style={{ color: "#8A9186", fontSize: 12 }}>
+                <button onClick={() => updateRecurring(r.id, { active: !r.active })} style={{ color: T.muted, fontSize: 12 }}>
                   {r.active ? "Pause" : "Resume"}
                 </button>
-                <button onClick={() => deleteRecurring(r.id)} style={{ color: "#C05C4A", padding: 4, marginLeft: "auto" }}><Trash2 size={13} /></button>
+                <button onClick={() => deleteRecurring(r.id)} style={{ color: T.neg, padding: 4, marginLeft: "auto" }}><Trash2 size={13} /></button>
               </div>
             </Card>
           );
@@ -1769,15 +2355,15 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
       {/* Top Totals */}
       <Card>
         <div className="grid grid-cols-3 gap-4">
-          <StatCard label="Owed to you" value={money(owedToMe)} color="#4C8B5C" />
-          <StatCard label="You owe" value={money(iOwe)} color="#C05C4A" />
-          <StatCard label="Net" value={money(round2(owedToMe - iOwe))} color={owedToMe - iOwe < 0 ? "#C05C4A" : "#1F2A1D"} />
+          <StatCard label="Owed to you" value={money(owedToMe)} color={T.pos} />
+          <StatCard label="You owe" value={money(iOwe)} color={T.neg} />
+          <StatCard label="Net" value={money(round2(owedToMe - iOwe))} color={owedToMe - iOwe < 0 ? T.neg : T.ink} />
         </div>
       </Card>
 
       {/* Member Cards Grid */}
       <div className="flex items-center justify-between">
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: "#1F2A1D" }}>Members & Balances</div>
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 16, color: T.ink }}>Members & Balances</div>
       </div>
 
       <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
@@ -1822,7 +2408,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
                 </span>
                 <span
                   className="font-display font-extrabold text-sm"
-                  style={{ color: net > 0 ? "#4C8B5C" : net < 0 ? "#C05C4A" : "#8A9186" }}
+                  style={{ color: net > 0 ? T.pos : net < 0 ? T.neg : T.muted }}
                 >
                   {net === 0 ? "₹0.00" : money(net)}
                 </span>
@@ -1888,7 +2474,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
           onChange={(e) => setNewMemberInput(e.target.value)}
           style={{ flex: 1 }}
         />
-        <button type="submit" style={{ background: "#1F2A1D", color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
+        <button type="submit" style={{ background: T.ink, color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
           + Add Person
         </button>
       </form>
@@ -1896,7 +2482,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
       {/* Filter and Log Bar */}
       <div className="flex items-center justify-between mt-2 flex-wrap gap-2">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span style={{ fontSize: 12, fontWeight: 600, color: "#8A9186" }}>Filter:</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: T.muted }}>Filter:</span>
           <button
             onClick={() => setFilterPerson("all")}
             className={`px-2.5 py-1 rounded-md text-xs font-semibold border ${filterPerson === "all" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"}`}
@@ -1916,7 +2502,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
         <button
           onClick={() => setAdding((v) => !v)}
           className="flex items-center gap-1.5"
-          style={{ background: "#1F2A1D", color: "#F7F8F5", borderRadius: 9, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
+          style={{ background: T.ink, color: T.bg, borderRadius: 9, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}
         >
           <Plus size={14} /> Log Debt
         </button>
@@ -1928,33 +2514,33 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
           <div className="flex gap-2 mb-2">
             <button
               onClick={() => setForm({ ...form, direction: "owed_to_me" })}
-              style={{ flex: 1, background: form.direction === "owed_to_me" ? "#4C8B5C" : "#F7F8F5", color: form.direction === "owed_to_me" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
+              style={{ flex: 1, background: form.direction === "owed_to_me" ? T.pos : T.bg, color: form.direction === "owed_to_me" ? "#fff" : T.text2, borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
             >
               They owe me (I Lent)
             </button>
             <button
               onClick={() => setForm({ ...form, direction: "i_owe" })}
-              style={{ flex: 1, background: form.direction === "i_owe" ? "#C05C4A" : "#F7F8F5", color: form.direction === "i_owe" ? "#fff" : "#4A5247", borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
+              style={{ flex: 1, background: form.direction === "i_owe" ? T.neg : T.bg, color: form.direction === "i_owe" ? "#fff" : T.text2, borderRadius: 8, padding: "8px", fontSize: 12.5, fontWeight: 700 }}
             >
               I owe them (I Borrowed)
             </button>
           </div>
 
           <div className="flex items-center gap-1.5 mb-2 overflow-x-auto py-1">
-            <span style={{ fontSize: 11, color: "#8A9186", flexShrink: 0 }}>Select person:</span>
+            <span style={{ fontSize: 11, color: T.muted, flexShrink: 0 }}>Select person:</span>
             {members.map((m) => (
               <button
                 key={m}
                 type="button"
                 onClick={() => setForm({ ...form, person: m })}
                 style={{
-                  background: form.person === m ? "#1F2A1D" : "#F7F8F5",
-                  color: form.person === m ? "#fff" : "#4A5247",
+                  background: form.person === m ? T.ink : T.bg,
+                  color: form.person === m ? "#fff" : T.text2,
                   fontSize: 11.5,
                   padding: "4px 8px",
                   borderRadius: 6,
                   fontWeight: 600,
-                  border: "1px solid #E7E9E2",
+                  border: `1px solid ${T.line}`,
                   flexShrink: 0,
                 }}
               >
@@ -1979,13 +2565,13 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
           </div>
 
           <div className="flex items-center gap-1.5 mb-2">
-            <span style={{ fontSize: 11, color: "#8A9186" }}>Quick amount:</span>
+            <span style={{ fontSize: 11, color: T.muted }}>Quick amount:</span>
             {quickAmounts.map((q) => (
               <button
                 key={q}
                 type="button"
                 onClick={() => setForm({ ...form, amount: String(q) })}
-                style={{ background: "#F7F8F5", border: "1px solid #E7E9E2", color: "#4A5247", borderRadius: 6, padding: "3px 8px", fontSize: 11.5, fontWeight: 600 }}
+                style={{ background: T.bg, border: `1px solid ${T.line}`, color: T.text2, borderRadius: 6, padding: "3px 8px", fontSize: 11.5, fontWeight: 600 }}
               >
                 +₹{q}
               </button>
@@ -2000,10 +2586,10 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
           />
 
           <div className="flex gap-2">
-            <button onClick={submit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>
+            <button onClick={submit} style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>
               Save Debt
             </button>
-            <button onClick={() => setAdding(false)} style={{ color: "#8A9186", fontSize: 13 }}>
+            <button onClick={() => setAdding(false)} style={{ color: T.muted, fontSize: 13 }}>
               Cancel
             </button>
           </div>
@@ -2018,7 +2604,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
           <div className="flex flex-col gap-3">
             {active.map((d) => (
               editingId === d.id && editForm ? (
-                <div key={d.id} style={{ borderTop: "1px solid #E7E9E2", paddingTop: 10 }}>
+                <div key={d.id} style={{ borderTop: `1px solid ${T.line}`, paddingTop: 10 }}>
                   <div className="flex gap-2 mb-2">
                     <button onClick={() => setEditForm({ ...editForm, direction: "owed_to_me" })} className={`flex-1 py-1.5 rounded text-xs font-bold ${editForm.direction === "owed_to_me" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"}`}>They owe me</button>
                     <button onClick={() => setEditForm({ ...editForm, direction: "i_owe" })} className={`flex-1 py-1.5 rounded text-xs font-bold ${editForm.direction === "i_owe" ? "bg-rose-600 text-white" : "bg-slate-100 text-slate-600"}`}>I owe them</button>
@@ -2033,29 +2619,29 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
                     <FieldInput type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} />
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={saveEdit} style={{ background: "#4C8B5C", color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
-                    <button onClick={() => { setEditingId(null); setEditForm(null); }} style={{ color: "#8A9186", fontSize: 12.5 }}>Cancel</button>
+                    <button onClick={saveEdit} style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700 }}>Save</button>
+                    <button onClick={() => { setEditingId(null); setEditForm(null); }} style={{ color: T.muted, fontSize: 12.5 }}>Cancel</button>
                   </div>
                 </div>
               ) : (
               <div key={d.id} className="flex items-center gap-3">
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: (d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A") + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <User size={15} color={d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A"} />
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: (d.direction === "owed_to_me" ? T.pos : T.neg) + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <User size={15} color={d.direction === "owed_to_me" ? T.pos : T.neg} />
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#1F2A1D" }}>{d.person}</div>
-                  <div style={{ fontSize: 11, color: "#8A9186" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: T.ink }}>{d.person}</div>
+                  <div style={{ fontSize: 11, color: T.muted }}>
                     {d.direction === "owed_to_me" ? "owes you" : "you owe"} · {fmtDateShort(d.date)}{d.note ? ` · ${d.note}` : ""}
                   </div>
                 </div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: d.direction === "owed_to_me" ? "#4C8B5C" : "#C05C4A", flexShrink: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: d.direction === "owed_to_me" ? T.pos : T.neg, flexShrink: 0 }}>
                   {money(d.amount)}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  <button onClick={() => startEdit(d)} title="Edit" style={{ color: "#8A9186", padding: 4 }}><Pencil size={13} /></button>
-                  <button onClick={() => shareDebt(d)} title="Share reminder" style={{ color: "#8A9186", padding: 4 }}><Share size={14} /></button>
-                  <button onClick={() => updateDebt(d.id, { settled: true })} title="Mark settled" style={{ color: "#4C8B5C", padding: 4 }}><Check size={14} /></button>
-                  <button onClick={() => deleteDebt(d.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={13} /></button>
+                  <button onClick={() => startEdit(d)} title="Edit" style={{ color: T.muted, padding: 4 }}><Pencil size={13} /></button>
+                  <button onClick={() => shareDebt(d)} title="Share reminder" style={{ color: T.muted, padding: 4 }}><Share size={14} /></button>
+                  <button onClick={() => updateDebt(d.id, { settled: true })} title="Mark settled" style={{ color: T.pos, padding: 4 }}><Check size={14} /></button>
+                  <button onClick={() => deleteDebt(d.id)} style={{ color: T.neg, padding: 4 }}><Trash2 size={13} /></button>
                 </div>
               </div>
               )
@@ -2067,15 +2653,15 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
       {/* Settled List */}
       {settled.length > 0 && (
         <Card>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#8A9186", marginBottom: 8 }}>Settled History</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: T.muted, marginBottom: 8 }}>Settled History</div>
           <div className="flex flex-col gap-2">
             {settled.map((d) => (
               <div key={d.id} className="flex items-center gap-3" style={{ opacity: 0.65 }}>
-                <div style={{ flex: 1, fontSize: 12.5, color: "#1F2A1D", textDecoration: "line-through" }}>
+                <div style={{ flex: 1, fontSize: 12.5, color: T.ink, textDecoration: "line-through" }}>
                   {d.person} — {money(d.amount)} {d.note ? `(${d.note})` : ""}
                 </div>
-                <button onClick={() => updateDebt(d.id, { settled: false })} style={{ fontSize: 11, color: "#8A9186", textDecoration: "underline" }}>reopen</button>
-                <button onClick={() => deleteDebt(d.id)} style={{ color: "#C05C4A", padding: 4 }}><Trash2 size={12} /></button>
+                <button onClick={() => updateDebt(d.id, { settled: false })} style={{ fontSize: 11, color: T.muted, textDecoration: "underline" }}>reopen</button>
+                <button onClick={() => deleteDebt(d.id)} style={{ color: T.neg, padding: 4 }}><Trash2 size={12} /></button>
               </div>
             ))}
           </div>
@@ -2109,13 +2695,13 @@ function ShareFallbackModal({ data, onClose }) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ background: "#FFFFFF", borderRadius: 16, padding: 20, maxWidth: 380, width: "100%", boxShadow: "0 10px 40px rgba(31,42,29,0.2)" }}
+        style={{ background: T.card, borderRadius: 16, padding: 20, maxWidth: 380, width: "100%", boxShadow: "0 10px 40px rgba(31,42,29,0.2)" }}
       >
         <div className="flex items-center justify-between mb-3">
-          <div className="font-display" style={{ fontWeight: 700, fontSize: 15, color: "#1F2A1D" }}>Share with {debt.person}</div>
-          <button onClick={onClose} style={{ color: "#8A9186" }}><X size={16} /></button>
+          <div className="font-display" style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Share with {debt.person}</div>
+          <button onClick={onClose} style={{ color: T.muted }}><X size={16} /></button>
         </div>
-        <div style={{ background: "#F7F8F5", border: "1px solid #E7E9E2", borderRadius: 10, padding: 12, fontSize: 12.5, color: "#4A5247", lineHeight: 1.5, marginBottom: 14, whiteSpace: "pre-line", maxHeight: 260, overflowY: "auto" }}>
+        <div style={{ background: T.bg, border: `1px solid ${T.line}`, borderRadius: 10, padding: 12, fontSize: 12.5, color: T.text2, lineHeight: 1.5, marginBottom: 14, whiteSpace: "pre-line", maxHeight: 260, overflowY: "auto" }}>
           {message}
         </div>
         <div className="flex flex-col gap-2">
@@ -2124,14 +2710,14 @@ function ShareFallbackModal({ data, onClose }) {
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center justify-center gap-2"
-            style={{ background: "#4C8B5C", color: "#fff", borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700, textDecoration: "none" }}
+            style={{ background: T.pos, color: "#fff", borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700, textDecoration: "none" }}
           >
             <MessageCircle size={15} /> Open in WhatsApp
           </a>
           <button
             onClick={copy}
             className="flex items-center justify-center gap-2"
-            style={{ background: "#F7F8F5", color: "#1F2A1D", border: "1px solid #E7E9E2", borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}
+            style={{ background: T.bg, color: T.ink, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 700 }}
           >
             <Copy size={14} /> {copied ? "Copied!" : "Copy message"}
           </button>
@@ -2180,20 +2766,20 @@ function ReportsTab({ transactions, accounts }) {
       </div>
 
       <Card>
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D", marginBottom: 14 }}>Income vs. expense — last 6 months</div>
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 14 }}>Income vs. expense — last 6 months</div>
         <div className="flex flex-col gap-3">
           {monthly.map((m) => (
             <div key={m.mk}>
-              <div className="flex items-center justify-between mb-1" style={{ fontSize: 11.5, color: "#8A9186" }}>
+              <div className="flex items-center justify-between mb-1" style={{ fontSize: 11.5, color: T.muted }}>
                 <span>{monthLabel(m.mk)}</span>
                 <span>+{money(m.income).slice(1)} / -{money(m.expense).slice(1)}</span>
               </div>
               <div className="flex flex-col gap-1">
-                <div style={{ background: "#EDEFEA", borderRadius: 5, height: 8 }}>
-                  <div style={{ width: `${(m.income / maxVal) * 100}%`, background: "#4C8B5C", height: "100%", borderRadius: 5 }} />
+                <div style={{ background: T.soft, borderRadius: 5, height: 8 }}>
+                  <div style={{ width: `${(m.income / maxVal) * 100}%`, background: T.pos, height: "100%", borderRadius: 5 }} />
                 </div>
-                <div style={{ background: "#EDEFEA", borderRadius: 5, height: 8 }}>
-                  <div style={{ width: `${(m.expense / maxVal) * 100}%`, background: "#C05C4A", height: "100%", borderRadius: 5 }} />
+                <div style={{ background: T.soft, borderRadius: 5, height: 8 }}>
+                  <div style={{ width: `${(m.expense / maxVal) * 100}%`, background: T.neg, height: "100%", borderRadius: 5 }} />
                 </div>
               </div>
             </div>
@@ -2202,7 +2788,7 @@ function ReportsTab({ transactions, accounts }) {
       </Card>
 
       <Card>
-        <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: "#1F2A1D", marginBottom: 14 }}>This month's spending by category</div>
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 14 }}>This month's spending by category</div>
         {catTotals.length === 0 ? (
           <EmptyState icon={TrendingDown} text="No expenses logged this month yet." />
         ) : (
@@ -2210,8 +2796,8 @@ function ReportsTab({ transactions, accounts }) {
             {catTotals.map((c) => (
               <div key={c.name}>
                 <div className="flex items-center justify-between mb-1" style={{ fontSize: 12 }}>
-                  <span className="flex items-center gap-1.5" style={{ color: "#1F2A1D" }}><c.icon size={12} color={c.color} /> {c.name}</span>
-                  <span style={{ color: "#8A9186" }}>{money(c.total)}</span>
+                  <span className="flex items-center gap-1.5" style={{ color: T.ink }}><c.icon size={12} color={c.color} /> {c.name}</span>
+                  <span style={{ color: T.muted }}>{money(c.total)}</span>
                 </div>
                 <ProgressBar pct={(c.total / catMax) * 100} color={c.color} />
               </div>
