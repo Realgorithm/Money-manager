@@ -6,7 +6,7 @@ import {
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
   Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet,
   Camera, Loader2, Sparkles, Leaf, Eye, EyeOff, Moon, Sun, Settings, KeyRound, ShieldCheck, Upload,
-  Delete as DeleteIcon, PiggyBank, CalendarDays, Fingerprint
+  Delete as DeleteIcon, PiggyBank, CalendarDays, Fingerprint, RefreshCw
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { parsePaymentReceipt, matchAccount } from "./receiptParser";
@@ -220,6 +220,8 @@ export default function App() {
   const [prefs, setPrefsState] = useState(loadPrefs);
   const [systemDark, setSystemDark] = useState(() => !!window.matchMedia?.("(prefers-color-scheme: dark)").matches);
   const [showSettings, setShowSettings] = useState(false);
+  const [bioOffer, setBioOffer] = useState(false);
+  const [bioOfferErr, setBioOfferErr] = useState("");
 
   const setPrefs = useCallback((patch) => {
     setPrefsState((p) => {
@@ -242,6 +244,19 @@ export default function App() {
     document.body.style.background = T.bg;
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", T.bg);
   }, [resolvedTheme]);
+
+  // Offer fingerprint unlock once, after a successful PIN unlock, if this device can do it.
+  useEffect(() => {
+    if (!unlocked || bioCredId() || localStorage.getItem("finance_bio_dismissed") === "1") return;
+    let live = true;
+    bioUnavailableReason().then((r) => { if (live && !r) setBioOffer(true); });
+    return () => { live = false; };
+  }, [unlocked]);
+  const enableBioFromOffer = async () => {
+    try { await bioEnroll(credentials?.name); setBioOffer(false); }
+    catch (e) { setBioOfferErr(e?.name === "NotAllowedError" ? "Setup was cancelled." : "Couldn't set it up on this device."); }
+  };
+  const dismissBioOffer = () => { localStorage.setItem("finance_bio_dismissed", "1"); setBioOffer(false); };
 
   const lockNow = useCallback(() => {
     sessionStorage.removeItem("finance_unlocked");
@@ -578,6 +593,7 @@ export default function App() {
           onLock={lockNow}
           name={credentials.name}
         />
+        {bioOffer && <BioOffer onEnable={enableBioFromOffer} onDismiss={dismissBioOffer} error={bioOfferErr} />}
         <div key={tab} className="fade-up">
 
         {tab === "dashboard" && (
@@ -778,6 +794,20 @@ function LinkButton({ children, ...rest }) {
   return <button {...rest} style={{ color: T.muted, fontSize: 12.5, textDecoration: "underline", ...rest.style }}>{children}</button>;
 }
 
+function BioOffer({ onEnable, onDismiss, error }) {
+  return (
+    <div className="fade-up flex items-center gap-3" style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 16, padding: 12, marginBottom: 16, boxShadow: T.shadow }}>
+      <div style={{ width: 38, height: 38, borderRadius: 12, background: T.pos + "22", color: T.pos, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Fingerprint size={20} /></div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: T.ink }}>Unlock with your fingerprint?</div>
+        <div style={{ fontSize: 11.5, color: error ? T.neg : T.muted }}>{error || "Skip typing your PIN on this device. The PIN still works."}</div>
+      </div>
+      <button onClick={onEnable} style={{ background: T.pos, color: "#fff", borderRadius: 10, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}>Turn on</button>
+      <button onClick={onDismiss} aria-label="Dismiss" style={{ color: T.muted }}><X size={16} /></button>
+    </div>
+  );
+}
+
 function PinPad({ value, onChange, onSubmit, max = 8, disabled, shake }) {
   const latest = useRef({});
   latest.current = { value, onChange, onSubmit, disabled };
@@ -911,10 +941,17 @@ const b64u = {
   dec: (str) => Uint8Array.from(atob(str.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
 };
 const bioCredId = () => { try { return JSON.parse(localStorage.getItem(BIO_KEY))?.id || null; } catch { return null; } };
-const bioSupported = async () => {
+const APP_BUILD = "2026.10.10-bio2"; // shown in Settings so you can tell which version is running
+// Returns "" when fingerprint unlock can be tried, otherwise a human-readable reason.
+const bioUnavailableReason = async () => {
+  if (!window.isSecureContext) return "Needs a secure (https) connection.";
+  if (!window.PublicKeyCredential || !navigator.credentials?.create) return "This browser doesn't support fingerprint sign-in.";
   try {
-    return !!(window.PublicKeyCredential && window.isSecureContext && (await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()));
-  } catch { return false; }
+    if (!(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable())) {
+      return "No fingerprint or screen lock found — set one up in your phone's security settings.";
+    }
+  } catch { /* some browsers throw; let the real attempt decide */ }
+  return "";
 };
 const bioEnroll = async (label) => {
   const cred = await navigator.credentials.create({
@@ -1136,9 +1173,9 @@ function SettingsModal({ prefs, setPrefs, name, onSaveName, hasRecovery, onChang
   const [pinForm, setPinForm] = useState({ cur: "", next: "", confirm: "" });
   const [pinMsg, setPinMsg] = useState(null);
   const [bioOn, setBioOn] = useState(() => !!bioCredId());
-  const [bioAvail, setBioAvail] = useState(null);
+  const [bioReason, setBioReason] = useState(null); // null = still checking, "" = OK
   const [bioMsg, setBioMsg] = useState("");
-  useEffect(() => { bioSupported().then(setBioAvail); }, []);
+  useEffect(() => { bioUnavailableReason().then(setBioReason); }, []);
   const toggleBio = async (on) => {
     setBioMsg("");
     if (!on) { localStorage.removeItem(BIO_KEY); setBioOn(false); return; }
@@ -1202,8 +1239,8 @@ function SettingsModal({ prefs, setPrefs, name, onSaveName, hasRecovery, onChang
         </SettingsSection>
 
         <SettingsSection title="Security">
-          <SettingsRow label="Fingerprint unlock" hint={bioAvail === false ? "Not available in this browser or device" : "Unlock with your phone's fingerprint or screen lock · this device only · PIN still works"}>
-            <Switch on={bioOn} onChange={bioAvail === false ? () => {} : toggleBio} />
+          <SettingsRow label="Fingerprint unlock" hint={bioReason ? bioReason : "Unlock with your phone's fingerprint or screen lock · this device only · PIN still works"}>
+            <Switch on={bioOn} onChange={bioReason ? () => setBioMsg(bioReason) : toggleBio} />
           </SettingsRow>
           {bioMsg && <div style={{ fontSize: 12.5, color: bioOn ? T.pos : T.neg }}>{bioMsg}</div>}
           <div className="flex flex-col gap-2">
@@ -1238,6 +1275,14 @@ function SettingsModal({ prefs, setPrefs, name, onSaveName, hasRecovery, onChang
           {restoreMsg && <div style={{ fontSize: 12.5, color: restoreMsg.ok ? T.pos : T.neg }}>{restoreMsg.text}</div>}
           <SoftButton onClick={onExportCsv}><FileSpreadsheet size={14} /> Export transactions (CSV)</SoftButton>
           <div style={{ fontSize: 11.5, color: T.muted, lineHeight: 1.45 }}>Backups are plain JSON files — keep them somewhere private. Restoring replaces your current data (your PIN is kept).</div>
+        </SettingsSection>
+
+        <SettingsSection title="App">
+          <SoftButton onClick={async () => {
+            try { (await navigator.serviceWorker?.getRegistrations?.())?.forEach((r) => r.update()); } catch { /* best effort */ }
+            window.location.reload();
+          }}><RefreshCw size={14} /> Check for update &amp; reload</SoftButton>
+          <div style={{ fontSize: 11.5, color: T.muted }}>Version {APP_BUILD}</div>
         </SettingsSection>
 
         <SettingsSection title="Danger zone">
