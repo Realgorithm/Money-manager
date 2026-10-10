@@ -6,7 +6,7 @@ import {
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
   Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet,
   Camera, Loader2, Sparkles, Leaf, Eye, EyeOff, Moon, Sun, Settings, KeyRound, ShieldCheck, Upload,
-  Delete as DeleteIcon, PiggyBank, CalendarDays
+  Delete as DeleteIcon, PiggyBank, CalendarDays, Fingerprint
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { parsePaymentReceipt, matchAccount } from "./receiptParser";
@@ -902,6 +902,50 @@ function PinSetup({ onDone }) {
   );
 }
 
+// ---- fingerprint / face / screen-lock unlock (WebAuthn platform authenticator) ----
+// Per-device convenience: the phone's own biometric prompt replaces typing the PIN.
+// The PIN stays the real secret and always works as a fallback.
+const BIO_KEY = "finance_bio";
+const b64u = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+  dec: (str) => Uint8Array.from(atob(str.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
+};
+const bioCredId = () => { try { return JSON.parse(localStorage.getItem(BIO_KEY))?.id || null; } catch { return null; } };
+const bioSupported = async () => {
+  try {
+    return !!(window.PublicKeyCredential && window.isSecureContext && (await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()));
+  } catch { return false; }
+};
+const bioEnroll = async (label) => {
+  const cred = await navigator.credentials.create({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { name: "Money Manager" },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "owner", displayName: label || "Owner" },
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "discouraged" },
+      timeout: 60000,
+    },
+  });
+  if (!cred) throw new Error("cancelled");
+  localStorage.setItem(BIO_KEY, JSON.stringify({ id: b64u.enc(cred.rawId) }));
+};
+const bioVerify = async () => {
+  const id = bioCredId();
+  if (!id) return false;
+  try {
+    const res = await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [{ type: "public-key", id: b64u.dec(id), transports: ["internal"] }],
+        userVerification: "required",
+        timeout: 60000,
+      },
+    });
+    return !!res;
+  } catch { return false; }
+};
+
 const FAIL_KEY = "finance_pin_fails"; // per-device wrong-PIN counter
 const readFails = () => { try { return JSON.parse(localStorage.getItem(FAIL_KEY)) || { count: 0, until: 0 }; } catch { return { count: 0, until: 0 }; } };
 
@@ -923,6 +967,20 @@ function PinUnlock({ credentials, onUnlock, onResetPin, onErase }) {
     const t = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(t);
   }, [locked]);
+
+  // Fingerprint unlock: prompt automatically once, and keep a button for retries.
+  const [bio] = useState(() => !!bioCredId());
+  const [bioBusy, setBioBusy] = useState(false);
+  const bioAuto = useRef(false);
+  const tryBio = useCallback(async () => {
+    setBioBusy(true);
+    const ok = await bioVerify();
+    setBioBusy(false);
+    if (ok) { localStorage.removeItem(FAIL_KEY); onUnlock(); } else setError("Fingerprint didn't work — use your PIN.");
+  }, [onUnlock]);
+  useEffect(() => {
+    if (bio && !bioAuto.current) { bioAuto.current = true; tryBio(); }
+  }, [bio, tryBio]);
 
   const submit = async () => {
     if (locked || pin.length < 4) return;
@@ -1013,6 +1071,11 @@ function PinUnlock({ credentials, onUnlock, onResetPin, onErase }) {
         {locked ? `Locked for ${secsLeft}s — try again soon.` : error}
       </div>
       <PrimaryButton disabled={locked || pin.length < 4} onClick={submit}>Unlock</PrimaryButton>
+      {bio && (
+        <button onClick={tryBio} disabled={bioBusy} className="flex items-center justify-center gap-2 w-full" style={{ marginTop: 10, background: T.soft, color: T.ink, border: `1px solid ${T.line}`, borderRadius: 12, padding: "11px 16px", fontSize: 13.5, fontWeight: 600, opacity: bioBusy ? 0.6 : 1 }}>
+          <Fingerprint size={17} /> {bioBusy ? "Waiting for fingerprint…" : "Use fingerprint"}
+        </button>
+      )}
       <div className="text-center mt-3"><LinkButton onClick={() => go("recover")}>Forgot PIN?</LinkButton></div>
     </AuthShell>
   );
@@ -1072,6 +1135,21 @@ function SettingsModal({ prefs, setPrefs, name, onSaveName, hasRecovery, onChang
   const [nameSaved, setNameSaved] = useState(false);
   const [pinForm, setPinForm] = useState({ cur: "", next: "", confirm: "" });
   const [pinMsg, setPinMsg] = useState(null);
+  const [bioOn, setBioOn] = useState(() => !!bioCredId());
+  const [bioAvail, setBioAvail] = useState(null);
+  const [bioMsg, setBioMsg] = useState("");
+  useEffect(() => { bioSupported().then(setBioAvail); }, []);
+  const toggleBio = async (on) => {
+    setBioMsg("");
+    if (!on) { localStorage.removeItem(BIO_KEY); setBioOn(false); return; }
+    try {
+      await bioEnroll(name);
+      setBioOn(true);
+      setBioMsg("Fingerprint unlock is on for this device.");
+    } catch (e) {
+      setBioMsg(e?.name === "NotAllowedError" ? "Setup was cancelled." : "Couldn't set up fingerprint on this device.");
+    }
+  };
   const [newCode, setNewCode] = useState("");
   const [copied, setCopied] = useState(false);
   const [restoreMsg, setRestoreMsg] = useState(null);
@@ -1124,6 +1202,10 @@ function SettingsModal({ prefs, setPrefs, name, onSaveName, hasRecovery, onChang
         </SettingsSection>
 
         <SettingsSection title="Security">
+          <SettingsRow label="Fingerprint unlock" hint={bioAvail === false ? "Not available in this browser or device" : "Unlock with your phone's fingerprint or screen lock · this device only · PIN still works"}>
+            <Switch on={bioOn} onChange={bioAvail === false ? () => {} : toggleBio} />
+          </SettingsRow>
+          {bioMsg && <div style={{ fontSize: 12.5, color: bioOn ? T.pos : T.neg }}>{bioMsg}</div>}
           <div className="flex flex-col gap-2">
             <FieldInput type="password" inputMode="numeric" placeholder="Current PIN" value={pinForm.cur} onChange={(e) => setPinForm({ ...pinForm, cur: digits(e.target.value) })} />
             <div className="grid grid-cols-2 gap-2">
@@ -2161,7 +2243,7 @@ function BudgetsTab({ budgets, monthTx, upsertBudget, deleteBudget }) {
                 />
                 <button
                   onClick={() => upsertBudget(c.name, round2(Number(draft) || 0))}
-                  style={{ background: T.ink, color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700 }}
+                  style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700 }}
                 >
                   {b ? "Update" : "Set"}
                 </button>
@@ -2275,7 +2357,7 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
                 </div>
               </div>
               <div className="flex items-center gap-2 mt-3">
-                <button onClick={() => markBillPaid(r)} className="flex items-center gap-1" style={{ background: T.ink, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
+                <button onClick={() => markBillPaid(r)} className="flex items-center gap-1" style={{ background: T.pos, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
                   <Check size={12} /> Mark {r.type === "income" ? "received" : "paid"}
                 </button>
                 <button onClick={() => updateRecurring(r.id, { active: !r.active })} style={{ color: T.muted, fontSize: 12 }}>
@@ -2504,7 +2586,7 @@ function DebtsTab({ debts, members, owedToMe, iOwe, addDebt, updateDebt, deleteD
           onChange={(e) => setNewMemberInput(e.target.value)}
           style={{ flex: 1 }}
         />
-        <button type="submit" style={{ background: T.ink, color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
+        <button type="submit" style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700 }}>
           + Add Person
         </button>
       </form>
