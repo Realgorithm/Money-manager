@@ -31,10 +31,12 @@ async function readMessage(req) {
       text = j.raw_text ?? j.text ?? j.message ?? j.body ?? "";
       sender = j.sender ?? j.from ?? "";
       source = j.source ?? source;
-    } catch { /* not valid JSON — treat as plain text */ }
+    } catch { text = raw; /* not valid JSON — treat as plain text */ }
   } else if (type.includes("x-www-form-urlencoded")) {
+    // Some apps send plain text under this type by default; use the fields if present, else the raw body.
     const p = new URLSearchParams(raw);
-    text = p.get("raw_text") || p.get("text") || p.get("message") || p.get("body") || "";
+    const field = p.get("raw_text") || p.get("text") || p.get("message") || p.get("body");
+    text = field || raw;
     sender = p.get("sender") || p.get("from") || "";
     source = p.get("source") || source;
   }
@@ -42,15 +44,31 @@ async function readMessage(req) {
 }
 
 export default async (req) => {
-  if (req.method !== "POST") return json(405, { error: "POST only" });
-
   const secret = process.env.INGEST_KEY;
   const supaUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
-  if (!secret || !supaUrl || !serviceKey) return json(500, { error: "Server is not configured (missing environment variables)." });
-
+  const configured = !!(secret && supaUrl && serviceKey);
   const url = new URL(req.url);
   const given = req.headers.get("x-ingest-key") || url.searchParams.get("key") || "";
+
+  // Connection check: open  <this address>?key=YOUR_SECRET  in the phone's browser.
+  // Without the key it only says whether the server is configured; it never reveals anything else.
+  if (req.method === "GET") {
+    const out = { ok: true, configured };
+    if (given) {
+      out.keyOk = configured && safeEqual(given, secret);
+      if (out.keyOk) {
+        try {
+          const r = await fetch(`${supaUrl}/rest/v1/pending_transactions?select=id&limit=1`, { headers: { apikey: serviceKey, authorization: `Bearer ${serviceKey}` } });
+          out.table = r.ok ? "ready" : r.status === 404 ? "missing — run SUPABASE_INBOX.sql" : `error ${r.status}`;
+        } catch { out.table = "can't reach Supabase — check SUPABASE_URL"; }
+      }
+    }
+    return json(200, out);
+  }
+
+  if (req.method !== "POST") return json(405, { error: "POST or GET only" });
+  if (!configured) return json(500, { error: "Server is not configured (missing environment variables)." });
   if (!safeEqual(given, secret)) return json(401, { error: "Wrong or missing key." });
 
   const { text, sender, source } = await readMessage(req);
@@ -59,7 +77,7 @@ export default async (req) => {
   // Keep the database clean: only store messages that look like a payment, never OTPs.
   const hasAmount = /(?:rs\.?|inr|₹)\s*[\d,]+/i.test(text) || /(?:debited|credited)\s+(?:by|with)\s+[\d,]+/i.test(text);
   const isOtp = /\botp\b|one[\s-]?time\s+password|verification code/i.test(text);
-  if (!hasAmount || isOtp) return json(200, { stored: false, reason: isOtp ? "otp" : "no amount" });
+  if (!hasAmount || isOtp) return json(200, { stored: false, reason: isOtp ? "otp" : "no amount found in message", received: text.slice(0, 80) });
 
   const headers = { apikey: serviceKey, authorization: `Bearer ${serviceKey}`, "content-type": "application/json" };
 
