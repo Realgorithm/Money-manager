@@ -6,10 +6,11 @@ import {
   Utensils, Car, Home, Zap, Music, Heart, ShoppingBag, Briefcase, Laptop, Gift, Percent,
   Lock, Copy, MessageCircle, Building2, CheckCheck, Search, ChevronDown, ChevronUp, FileSpreadsheet,
   Camera, Loader2, Sparkles, Leaf, Eye, EyeOff, Moon, Sun, Settings, KeyRound, ShieldCheck, Upload,
-  Delete as DeleteIcon, PiggyBank, CalendarDays, Fingerprint, RefreshCw
+  Delete as DeleteIcon, PiggyBank, CalendarDays, Fingerprint, RefreshCw, Inbox
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { parsePaymentReceipt, matchAccount } from "./receiptParser";
+import { parseNotification, findDuplicates } from "./smsParser";
 
 // ---- storage helpers ---------------------------------------------------
 const KEYS = {
@@ -257,6 +258,102 @@ export default function App() {
     catch (e) { setBioOfferErr(e?.name === "NotAllowedError" ? "Setup was cancelled." : "Couldn't set it up on this device."); }
   };
   const dismissBioOffer = () => { localStorage.setItem("finance_bio_dismissed", "1"); setBioOffer(false); };
+
+  // ---- Inbox: payments auto-imported from the phone (see netlify/functions/ingest.mjs)
+  const [inboxRows, setInboxRows] = useState([]);
+  const [localRows, setLocalRows] = useState([]); // messages pasted into the Inbox tab
+  const [inboxError, setInboxError] = useState("");
+  const [drafts, setDrafts] = useState({});
+  const [learned, setLearned] = useState(() => { try { return JSON.parse(localStorage.getItem("finance_last4") || "{}"); } catch { return {}; } });
+  const asked = useRef(new Set());
+
+  const fetchInbox = useCallback(async () => {
+    const { data, error } = await supabase.from("pending_transactions").select("id, raw_text, sender, source, created_at").order("created_at", { ascending: true }).limit(100);
+    if (error) { setInboxError(/does not exist|relation|schema cache|404/i.test(`${error.message} ${error.code}`) || error.code === "42P01" || error.code === "PGRST205" ? "setup" : "network"); return; }
+    setInboxError("");
+    setInboxRows(data || []);
+  }, []);
+  useEffect(() => {
+    if (!unlocked) return;
+    fetchInbox();
+    const poll = setInterval(fetchInbox, 30000);
+    const vis = () => { if (document.visibilityState === "visible") fetchInbox(); };
+    document.addEventListener("visibilitychange", vis);
+    let channel;
+    try {
+      channel = supabase.channel("inbox-live").on("postgres_changes", { event: "*", schema: "public", table: "pending_transactions" }, fetchInbox).subscribe();
+    } catch { /* realtime is optional */ }
+    return () => { clearInterval(poll); document.removeEventListener("visibilitychange", vis); if (channel) supabase.removeChannel(channel); };
+  }, [unlocked, fetchInbox]);
+
+  const inbox = useMemo(() => {
+    const all = [...inboxRows, ...localRows].map((row) => {
+      const parsed = parseNotification(row.raw_text, accounts, row.created_at);
+      if (!parsed.ignore && !parsed.accountId && parsed.last4 && learned[parsed.last4] && accounts.some((a) => a.id === learned[parsed.last4])) parsed.accountId = learned[parsed.last4];
+      return { id: row.id, row, createdAt: new Date(row.created_at).getTime(), parsed };
+    });
+    const { drop, flag } = findDuplicates(all, transactions);
+    const junk = all.filter((i) => i.parsed.ignore).map((i) => i.id);
+    const items = all.filter((i) => !i.parsed.ignore && !drop.has(i.id)).sort((a, b) => b.createdAt - a.createdAt);
+    return { items, flag, remove: [...new Set([...drop, ...junk])] };
+  }, [inboxRows, localRows, accounts, transactions, learned]);
+
+  const removeRows = useCallback(async (ids) => {
+    if (!ids.length) return;
+    setLocalRows((r) => r.filter((x) => !ids.includes(x.id)));
+    const remote = ids.filter((id) => !String(id).startsWith("local-"));
+    if (remote.length) {
+      setInboxRows((r) => r.filter((x) => !remote.includes(x.id)));
+      await supabase.from("pending_transactions").delete().in("id", remote);
+    }
+  }, []);
+  // Quietly clear duplicates and non-payment messages
+  useEffect(() => {
+    const fresh = inbox.remove.filter((id) => !asked.current.has(id));
+    if (!fresh.length) return;
+    fresh.forEach((id) => asked.current.add(id));
+    removeRows(fresh);
+  }, [inbox.remove, removeRows]);
+
+  // One editable draft per inbox item
+  useEffect(() => {
+    setDrafts((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      inbox.items.forEach((it) => {
+        if (!next[it.id]) {
+          const p = it.parsed;
+          next[it.id] = { type: p.type, amount: String(p.amount), date: p.date, accountId: p.accountId || "", category: p.category, note: p.note };
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [inbox.items]);
+  const setDraft = (id, patch) => setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
+
+  const approveInbox = (list) => {
+    const txs = list.map((it) => {
+      const d = drafts[it.id];
+      const valid = (d.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).some((c) => c.name === d.category);
+      return { type: d.type, amount: d.amount, accountId: d.accountId, category: valid ? d.category : "Other", note: (d.note || "").trim(), date: d.date || todayISO(), ref: it.parsed.ref || undefined, srcAt: it.createdAt, source: "inbox" };
+    });
+    // one batch so several approvals in a row don't overwrite each other
+    let acc = accounts;
+    const made = txs.map((t) => { const tx = { id: uid(), ...t, amount: Math.abs(Number(t.amount) || 0) }; acc = applyTxEffect(acc, tx, +1); return tx; });
+    persistAccounts(acc);
+    persistTransactions([...made.reverse(), ...transactions]);
+    const nl = { ...learned };
+    list.forEach((it) => { if (it.parsed.last4 && drafts[it.id].accountId) nl[it.parsed.last4] = drafts[it.id].accountId; });
+    setLearned(nl);
+    try { localStorage.setItem("finance_last4", JSON.stringify(nl)); } catch { /* best effort */ }
+    removeRows(list.map((it) => it.id));
+  };
+  const pasteIntoInbox = (text) => {
+    if (parseNotification(text, accounts, new Date()).ignore) return false;
+    setLocalRows((r) => [...r, { id: `local-${uid()}`, raw_text: text.trim(), source: "pasted", local: true, created_at: new Date().toISOString() }]);
+    return true;
+  };
 
   const lockNow = useCallback(() => {
     sessionStorage.removeItem("finance_unlocked");
@@ -586,6 +683,7 @@ export default function App() {
           setTab={setTab}
           netWorth={netWorth}
           overdueBills={recurring.filter((r) => r.active && daysUntil(r.nextDue) < 0).length}
+          inboxCount={inbox.items.length}
           prefs={prefs}
           setPrefs={setPrefs}
           resolvedTheme={resolvedTheme}
@@ -593,6 +691,7 @@ export default function App() {
           onLock={lockNow}
           name={credentials.name}
         />
+        {inbox.items.length > 0 && tab !== "inbox" && <InboxBanner count={inbox.items.length} onOpen={() => setTab("inbox")} />}
         {bioOffer && <BioOffer onEnable={enableBioFromOffer} onDismiss={dismissBioOffer} error={bioOfferErr} />}
         <div key={tab} className="fade-up">
 
@@ -613,6 +712,21 @@ export default function App() {
         )}
         {tab === "accounts" && (
           <AccountsTab accounts={accounts} addAccount={addAccount} updateAccount={updateAccount} deleteAccount={deleteAccount} />
+        )}
+        {tab === "inbox" && (
+          <InboxTab
+            items={inbox.items}
+            drafts={drafts}
+            setDraft={setDraft}
+            accounts={accounts}
+            flaggedIds={inbox.flag}
+            error={inboxError}
+            onAdd={(it) => approveInbox([it])}
+            onAddAll={() => approveInbox(inbox.items.filter((i) => drafts[i.id]?.accountId && !inbox.flag.has(i.id)))}
+            onIgnore={(it) => removeRows([it.id])}
+            onRefresh={fetchInbox}
+            onPaste={pasteIntoInbox}
+          />
         )}
         {tab === "transactions" && (
           <TransactionsTab
@@ -1334,6 +1448,164 @@ function InstallBanner({ onInstall, onDismiss, ios }) {
   );
 }
 
+// ---- Inbox (auto-imported payments waiting for review) -------------------------
+
+const agoText = (iso) => {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+};
+
+function CopyField({ label, value }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* best effort */ }
+  };
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: T.muted, marginBottom: 3 }}>{label}</div>
+      <div className="flex items-center gap-2" style={{ background: T.soft, borderRadius: 10, padding: "7px 10px" }}>
+        <div className="mono" style={{ fontSize: 12, color: T.ink, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
+        <button onClick={copy} aria-label={`Copy ${label}`} style={{ color: copied ? T.pos : T.muted, flexShrink: 0 }}>{copied ? <Check size={14} /> : <Copy size={14} />}</button>
+      </div>
+    </div>
+  );
+}
+
+function InboxCard({ item, accounts, draft, setDraft, flagged, onAdd, onIgnore }) {
+  const isIncome = draft.type === "income";
+  const cats = isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+  const accent = isIncome ? T.pos : T.neg;
+  const canAdd = !!draft.accountId && Number(draft.amount) > 0;
+  return (
+    <div className="fade-up" style={{ background: T.card, border: `1px solid ${flagged ? T.warn : T.line}`, borderRadius: 16, padding: 14, boxShadow: T.shadow }}>
+      <div className="flex items-center gap-3 mb-2">
+        <div style={{ width: 36, height: 36, borderRadius: 11, background: accent + "22", color: accent, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          {isIncome ? <ArrowDownRight size={18} /> : <ArrowUpRight size={18} />}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="flex items-center gap-2">
+            <span className="font-display" style={{ fontSize: 20, fontWeight: 800, color: accent }}>{isIncome ? "+" : "−"}{money(Number(draft.amount) || 0)}</span>
+            <button onClick={() => setDraft({ type: isIncome ? "expense" : "income", category: "Other" })} style={{ fontSize: 11, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 99, padding: "1px 8px" }}>
+              {isIncome ? "received" : "spent"} · flip
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: T.muted }}>{item.row.local ? "pasted" : item.row.source || "sms"} · {agoText(item.row.created_at)}</div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: T.faint, lineHeight: 1.4, marginBottom: 10, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.row.raw_text}</div>
+
+      {flagged && <div style={{ fontSize: 11.5, color: T.warn, fontWeight: 600, marginBottom: 8 }}>Possible duplicate of another payment below/above — ignore the extra one.</div>}
+
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <FieldInput type="number" step="0.01" placeholder="Amount" value={draft.amount} onChange={(e) => setDraft({ amount: e.target.value })} />
+        <FieldInput type="date" value={draft.date} onChange={(e) => setDraft({ date: e.target.value })} />
+        <FieldSelect value={draft.accountId} onChange={(e) => setDraft({ accountId: e.target.value })} style={!draft.accountId ? { border: `1px solid ${T.warn}` } : undefined}>
+          <option value="">Choose account…</option>
+          {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </FieldSelect>
+        <FieldSelect value={draft.category} onChange={(e) => setDraft({ category: e.target.value })}>
+          {cats.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+        </FieldSelect>
+      </div>
+      <FieldInput placeholder={isIncome ? "From (optional)" : "Paid to (optional)"} value={draft.note} onChange={(e) => setDraft({ note: e.target.value })} style={{ width: "100%", marginBottom: 10 }} />
+
+      <div className="flex gap-2">
+        <button onClick={onAdd} disabled={!canAdd} style={{ flex: 1, background: T.pos, color: "#fff", borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 700, opacity: canAdd ? 1 : 0.45 }}>
+          {canAdd ? "Add to my records" : "Choose an account"}
+        </button>
+        <button onClick={onIgnore} style={{ background: T.soft, color: T.text2, border: `1px solid ${T.line}`, borderRadius: 10, padding: "9px 14px", fontSize: 13, fontWeight: 600 }}>Ignore</button>
+      </div>
+    </div>
+  );
+}
+
+function InboxTab({ items, drafts, setDraft, accounts, flaggedIds, error, onAdd, onAddAll, onIgnore, onRefresh, onPaste }) {
+  const [guide, setGuide] = useState(false);
+  const [paste, setPaste] = useState("");
+  const [pasteMsg, setPasteMsg] = useState("");
+  const endpoint = `${window.location.origin}/.netlify/functions/ingest`;
+  const ready = items.filter((i) => drafts[i.id]?.accountId && !flaggedIds.has(i.id));
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="font-display" style={{ fontSize: 17, fontWeight: 800, color: T.ink }}>Inbox</div>
+          <div style={{ fontSize: 12, color: T.muted }}>Payments picked up from your phone — you approve each one.</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {ready.length > 1 && (
+            <button onClick={onAddAll} style={{ background: T.pos, color: "#fff", borderRadius: 10, padding: "7px 12px", fontSize: 12.5, fontWeight: 700 }}>Add all ({ready.length})</button>
+          )}
+          <IconButton label="Refresh" onClick={onRefresh}><RefreshCw size={15} /></IconButton>
+        </div>
+      </div>
+
+      {error === "setup" && (
+        <div style={{ background: T.card, border: `1px solid ${T.warn}`, borderRadius: 14, padding: 14, fontSize: 12.5, color: T.text2, lineHeight: 1.55 }}>
+          <strong style={{ color: T.ink }}>The inbox table isn't set up yet.</strong> Run <span className="mono">SUPABASE_INBOX.sql</span> once in the Supabase SQL Editor, then refresh.
+        </div>
+      )}
+
+      {items.length === 0 && error !== "setup" && (
+        <div style={{ background: T.card, border: `1px dashed ${T.faint}`, borderRadius: 16, padding: 22, textAlign: "center", color: T.muted, fontSize: 13, lineHeight: 1.55 }}>
+          <Inbox size={26} style={{ margin: "0 auto 8px", color: T.faint }} />
+          Nothing waiting. New bank SMS and payment notifications will appear here within a few seconds.
+        </div>
+      )}
+
+      {items.map((it) => drafts[it.id] && (
+        <InboxCard key={it.id} item={it} accounts={accounts} draft={drafts[it.id]} flagged={flaggedIds.has(it.id)}
+          setDraft={(patch) => setDraft(it.id, patch)} onAdd={() => onAdd(it)} onIgnore={() => onIgnore(it)} />
+      ))}
+
+      <div style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 16, padding: 14, boxShadow: T.shadow }}>
+        <div className="font-display" style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 4 }}>Try it with a message</div>
+        <div style={{ fontSize: 12, color: T.muted, marginBottom: 8 }}>Paste any bank SMS or payment notification to see how it's read. Nothing is saved until you add it.</div>
+        <textarea value={paste} onChange={(e) => { setPaste(e.target.value); setPasteMsg(""); }} rows={3} placeholder="Rs.500.00 debited from A/c XX5230 … to swiggy@icici …"
+          style={{ width: "100%", background: T.soft, color: T.ink, border: `1px solid ${T.line}`, borderRadius: 10, padding: 10, fontSize: 12.5, resize: "vertical" }} />
+        <div className="flex items-center gap-3 mt-2">
+          <button onClick={() => { const ok = onPaste(paste); if (ok) { setPaste(""); setPasteMsg(""); } else setPasteMsg("Couldn't find a completed payment in that text."); }} disabled={!paste.trim()}
+            style={{ background: T.soft, color: T.ink, border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 600, opacity: paste.trim() ? 1 : 0.5 }}>Read message</button>
+          {pasteMsg && <span style={{ fontSize: 12, color: T.neg }}>{pasteMsg}</span>}
+        </div>
+      </div>
+
+      <div style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 16, padding: 14, boxShadow: T.shadow }}>
+        <button onClick={() => setGuide(!guide)} className="flex items-center justify-between w-full" style={{ color: T.ink }}>
+          <span className="font-display" style={{ fontWeight: 700, fontSize: 14 }}>Connect your phone (Android)</span>
+          {guide ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </button>
+        {guide && (
+          <div className="flex flex-col gap-3 mt-3" style={{ fontSize: 12.5, color: T.text2, lineHeight: 1.55 }}>
+            <CopyField label="Web address (URL)" value={endpoint} />
+            <CopyField label="Header name" value="x-ingest-key" />
+            <div>In <strong>MacroDroid</strong>, make a macro: <strong>Trigger</strong> “SMS Received” (add one trigger per word: <em>debited</em>, <em>credited</em>, <em>received</em>) and another “Notification Received” for your payment app. <strong>Action</strong> “HTTP Request”: method <strong>POST</strong>, the URL above, content type <strong>text/plain</strong>, header <span className="mono">x-ingest-key</span> = your secret key, and body = the <strong>SMS message</strong> (or notification title + text) from the magic-text list.</div>
+            <div style={{ color: T.muted }}>The secret key is the <span className="mono">INGEST_KEY</span> you set in Netlify. OTPs and non-payment messages are discarded before they're stored.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InboxBanner({ count, onOpen }) {
+  return (
+    <button onClick={onOpen} className="fade-up flex items-center gap-3 w-full" style={{ textAlign: "left", background: T.card, border: `1px solid ${T.pos}66`, borderRadius: 16, padding: 12, marginBottom: 16, boxShadow: T.shadow }}>
+      <div style={{ width: 38, height: 38, borderRadius: 12, background: T.pos + "22", color: T.pos, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Inbox size={20} /></div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: T.ink }}>{count} new {count === 1 ? "payment" : "payments"} to review</div>
+        <div style={{ fontSize: 11.5, color: T.muted }}>Picked up from your phone</div>
+      </div>
+      <span style={{ fontSize: 12.5, fontWeight: 700, color: T.pos }}>Review</span>
+    </button>
+  );
+}
+
 function IconButton({ children, label, onClick, active }) {
   return (
     <button onClick={onClick} aria-label={label} title={label} style={{ width: 36, height: 36, borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", background: active ? T.soft : T.card, color: active ? T.pos : T.text2, border: `1px solid ${T.line}`, boxShadow: T.shadow }}>
@@ -1342,10 +1614,11 @@ function IconButton({ children, label, onClick, active }) {
   );
 }
 
-function Header({ tab, setTab, netWorth, overdueBills, prefs, setPrefs, resolvedTheme, onSettings, onLock, name }) {
+function Header({ tab, setTab, netWorth, overdueBills, inboxCount = 0, prefs, setPrefs, resolvedTheme, onSettings, onLock, name }) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "transactions", label: "Transactions", icon: List },
+    { id: "inbox", label: "Inbox", icon: Inbox, badge: inboxCount },
     { id: "debts", label: "Debts", icon: HandCoins },
     { id: "accounts", label: "Accounts", icon: Wallet },
     { id: "budgets", label: "Budgets", icon: Target },
