@@ -93,8 +93,21 @@ function addInterval(dateStr, freq) {
   else if (freq === "biweekly") d.setDate(d.getDate() + 14);
   else if (freq === "monthly") d.setMonth(d.getMonth() + 1);
   else if (freq === "yearly") d.setFullYear(d.getFullYear() + 1);
-  return d.toISOString().slice(0, 10);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; // local date (toISOString is UTC and shifts days in IST)
 }
+
+// How many times a bill falls due on or before endISO (an overdue one counts once, then it repeats).
+function billOccurrences(bill, endISO) {
+  let n = 0, d = bill.nextDue, guard = 0;
+  while (d <= endISO && guard++ < 60) { n++; d = addInterval(d, bill.frequency); }
+  return n;
+}
+const endOfMonthISO = () => {
+  const d = new Date();
+  const e = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return `${e.getFullYear()}-${String(e.getMonth() + 1).padStart(2, "0")}-${String(e.getDate()).padStart(2, "0")}`;
+};
 
 async function hashPin(pin) {
   const enc = new TextEncoder().encode(pin);
@@ -741,7 +754,7 @@ export default function App() {
           <BudgetsTab budgets={budgets} monthTx={monthTx} upsertBudget={upsertBudget} deleteBudget={deleteBudget} />
         )}
         {tab === "bills" && (
-          <BillsTab accounts={accounts} recurring={recurring} addRecurring={addRecurring} updateRecurring={updateRecurring} deleteRecurring={deleteRecurring} markBillPaid={markBillPaid} />
+          <BillsTab accounts={accounts} recurring={recurring} addRecurring={addRecurring} updateRecurring={updateRecurring} deleteRecurring={deleteRecurring} markBillPaid={markBillPaid} owedToMe={owedToMe} iOwe={iOwe} />
         )}
         {tab === "debts" && (
           <DebtsTab
@@ -2581,8 +2594,88 @@ function BudgetsTab({ budgets, monthTx, upsertBudget, deleteBudget }) {
 
 // ---- Bills / recurring ---------------------------------------------------
 
-function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRecurring, markBillPaid }) {
+function PayoffCard({ accounts, recurring, owedToMe, iOwe }) {
+  const [horizon, setHorizon] = useState("month"); // month | days30 | once
+  const [withDebts, setWithDebts] = useState(true);
+  const [withOwed, setWithOwed] = useState(false);
+  const [withIncome, setWithIncome] = useState(false);
+
+  const end = horizon === "now" ? todayISO() : horizon === "month" ? endOfMonthISO() : horizon === "days30" ? (() => { let d = todayISO(); for (let i = 0; i < 30; i++) d = addInterval(d, "weekly") && d; const t = new Date(); t.setDate(t.getDate() + 30); const p = (n) => String(n).padStart(2, "0"); return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`; })() : "9999-12-31";
+  const times = (r) => (horizon === "once" ? 1 : billOccurrences(r, end));
+  const active = recurring.filter((r) => r.active);
+  const dueBills = active.filter((r) => r.type !== "income").map((r) => ({ r, n: times(r) })).filter((x) => x.n > 0);
+  const incomeBills = active.filter((r) => r.type === "income").map((r) => ({ r, n: times(r) })).filter((x) => x.n > 0);
+  const billsTotal = round2(dueBills.reduce((s, x) => s + x.r.amount * x.n, 0));
+  const incomeTotal = round2(incomeBills.reduce((s, x) => s + x.r.amount * x.n, 0));
+  const have = round2(accounts.reduce((s, a) => s + a.balance, 0));
+  const left = round2(have - billsTotal - (withDebts ? iOwe : 0) + (withOwed ? owedToMe : 0) + (withIncome ? incomeTotal : 0));
+
+  // per-account: can each account cover the bills that are paid from it?
+  const perAccount = accounts
+    .map((a) => {
+      const bills = round2(dueBills.filter((x) => x.r.accountId === a.id).reduce((s, x) => s + x.r.amount * x.n, 0));
+      return { a, bills, after: round2(a.balance - bills) };
+    })
+    .filter((x) => x.bills > 0);
+
+  const row = (label, value, tone, extra) => (
+    <div className="flex items-center justify-between gap-3" style={{ fontSize: 13 }}>
+      <div style={{ color: T.text2, minWidth: 0 }}>{label}</div>
+      <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+        <span style={{ color: tone || T.ink, fontWeight: 700 }}>{value}</span>
+        {extra}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 18, padding: 16, boxShadow: T.shadow }}>
+      <div className="font-display" style={{ fontWeight: 800, fontSize: 15, color: T.ink, marginBottom: 2 }}>If I clear everything</div>
+      <div style={{ fontSize: 12, color: T.muted, marginBottom: 10 }}>What's left after paying the bills below.</div>
+      <Segmented value={horizon} onChange={setHorizon} options={[{ id: "now", label: "Due now" }, { id: "month", label: "This month" }, { id: "days30", label: "30 days" }, { id: "once", label: "All once" }]} />
+      <div className="flex flex-col gap-2.5" style={{ margin: "14px 0" }}>
+        {row("Money in my accounts", money(have), T.pos)}
+        {row(`Bills to pay (${dueBills.reduce((s, x) => s + x.n, 0)})`, `− ${money(billsTotal)}`, T.neg)}
+        {row("Debts I owe", `− ${money(iOwe)}`, T.neg, <Switch on={withDebts} onChange={setWithDebts} />)}
+        {owedToMe > 0 && row("Money owed to me", `+ ${money(owedToMe)}`, T.pos, <Switch on={withOwed} onChange={setWithOwed} />)}
+        {incomeTotal > 0 && row("Expected income", `+ ${money(incomeTotal)}`, T.pos, <Switch on={withIncome} onChange={setWithIncome} />)}
+      </div>
+      <div style={{ background: left < 0 ? T.neg + "1F" : T.pos + "1F", borderRadius: 14, padding: "12px 14px" }}>
+        <div style={{ fontSize: 11.5, color: T.muted, textTransform: "uppercase", letterSpacing: 0.6 }}>You'd have left</div>
+        <div className="font-display" style={{ fontSize: 28, fontWeight: 800, color: left < 0 ? T.neg : T.pos, letterSpacing: -0.5 }}>{money(left)}</div>
+        <div style={{ fontSize: 12, color: T.muted }}>from {money(have)} in your accounts today</div>
+        {left < 0 && <div style={{ fontSize: 12, color: T.neg, fontWeight: 600 }}>Short by {money(Math.abs(left))}</div>}
+      </div>
+      {perAccount.length > 0 && (
+        <div className="flex flex-col gap-1.5" style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: 0.6 }}>By account (bills only)</div>
+          {perAccount.map(({ a, bills, after }) => (
+            <div key={a.id} className="flex items-center justify-between" style={{ fontSize: 12.5 }}>
+              <span style={{ color: T.text2 }}>{a.name} <span style={{ color: T.faint }}>· pays {money(bills)}</span></span>
+              <span style={{ color: after < 0 ? T.neg : T.ink, fontWeight: 700 }}>{after < 0 ? `short ${money(Math.abs(after))}` : `${money(after)} left`}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRecurring, markBillPaid, owedToMe = 0, iOwe = 0 }) {
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const startEdit = (r) => {
+    setEditingId(r.id);
+    setEditForm({ name: r.name, amount: String(r.amount), accountId: r.accountId, category: r.category, frequency: r.frequency, nextDue: r.nextDue });
+  };
+  const saveEdit = () => {
+    const amt = round2(Number(editForm.amount) || 0);
+    if (!editForm.name.trim() || amt <= 0 || !editForm.accountId) return;
+    updateRecurring(editingId, { name: editForm.name.trim(), amount: amt, accountId: editForm.accountId, category: editForm.category, frequency: editForm.frequency, nextDue: editForm.nextDue || todayISO() });
+    setEditingId(null);
+    setEditForm(null);
+  };
   const [form, setForm] = useState({ name: "", type: "expense", category: "", accountId: "", amount: "", frequency: "monthly", nextDue: todayISO() });
 
   const submit = () => {
@@ -2615,6 +2708,8 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
           <Plus size={14} /> Add bill
         </button>
       </div>
+
+      <PayoffCard accounts={accounts} recurring={recurring} owedToMe={owedToMe} iOwe={iOwe} />
 
       {adding && (
         <Card>
@@ -2657,7 +2752,33 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
           const c = catInfo(r.category, r.type);
           const accName = accounts.find((a) => a.id === r.accountId)?.name || "Deleted account";
           return (
-            <Card key={r.id} className="card-hover">
+            <Card key={r.id} className="card-hover" style={{ opacity: r.active ? 1 : 0.55 }}>
+              {editingId === r.id && editForm ? (
+                <div>
+                  <div className="grid sm:grid-cols-2 gap-2 mb-2">
+                    <FieldInput placeholder="Name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+                    <FieldInput type="number" step="0.01" placeholder="Amount (₹)" value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} />
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-2 mb-2">
+                    <FieldSelect value={editForm.accountId} onChange={(e) => setEditForm({ ...editForm, accountId: e.target.value })}>
+                      {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </FieldSelect>
+                    <FieldSelect value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}>
+                      {(r.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+                    </FieldSelect>
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-2 mb-3">
+                    <FieldSelect value={editForm.frequency} onChange={(e) => setEditForm({ ...editForm, frequency: e.target.value })}>
+                      {Object.entries(FREQ_LABEL).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                    </FieldSelect>
+                    <FieldInput type="date" value={editForm.nextDue} onChange={(e) => setEditForm({ ...editForm, nextDue: e.target.value })} />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={saveEdit} style={{ background: T.pos, color: "#fff", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700 }}>Save</button>
+                    <button onClick={() => { setEditingId(null); setEditForm(null); }} style={{ color: T.muted, fontSize: 13 }}>Cancel</button>
+                  </div>
+                </div>
+              ) : (<>
               <div className="flex items-center gap-3">
                 <div style={{ width: 34, height: 34, borderRadius: 9, background: c.color + "1A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   <c.icon size={16} color={c.color} />
@@ -2678,11 +2799,13 @@ function BillsTab({ accounts, recurring, addRecurring, updateRecurring, deleteRe
                 <button onClick={() => markBillPaid(r)} className="flex items-center gap-1" style={{ background: T.pos, color: "#fff", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
                   <Check size={12} /> Mark {r.type === "income" ? "received" : "paid"}
                 </button>
+                <button onClick={() => startEdit(r)} title="Edit" className="flex items-center gap-1" style={{ color: T.text2, fontSize: 12, padding: 4 }}><Pencil size={13} /> Edit</button>
                 <button onClick={() => updateRecurring(r.id, { active: !r.active })} style={{ color: T.muted, fontSize: 12 }}>
                   {r.active ? "Pause" : "Resume"}
                 </button>
                 <button onClick={() => deleteRecurring(r.id)} style={{ color: T.neg, padding: 4, marginLeft: "auto" }}><Trash2 size={13} /></button>
               </div>
+              </>)}
             </Card>
           );
         })}
