@@ -1508,7 +1508,7 @@ function ConnectionCard({ log }) {
   const hint = (e) => {
     if (e.reason === "wrong key") return "The secret in MacroDroid's x-ingest-key header doesn't match INGEST_KEY.";
     if (e.reason === "empty body") return "MacroDroid sent nothing — in the HTTP action's body pick the SMS message / notification text.";
-    if (e.reason === "no amount found") return `A ${e.length}-character message arrived with no ₹/Rs amount — check the body isn't just a placeholder.`;
+    if (e.reason === "no amount found") return `A ${e.length}-character message arrived with no ₹/Rs amount${e.preview ? ` — it said “${e.preview}”` : ""}. Check what MacroDroid puts in the body.`;
     if (e.result === "error") return "The server couldn't save it — check the Supabase keys in Netlify.";
     return "";
   };

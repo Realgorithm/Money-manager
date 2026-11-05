@@ -8,11 +8,15 @@
 //   SUPABASE_SERVICE_KEY  Supabase → Project Settings → API → service_role key (keep private!)
 
 const json = (status, body) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
 // constant-time string compare
 function safeEqual(a, b) {
-  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length)
+    return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
@@ -22,11 +26,24 @@ function safeEqual(a, b) {
 // really reaching the server. Never stores the content of messages that were discarded.
 async function logEvent(supaUrl, serviceKey, entry) {
   try {
-    const headers = { apikey: serviceKey, authorization: `Bearer ${serviceKey}`, "content-type": "application/json" };
-    await fetch(`${supaUrl}/rest/v1/ingest_log`, { method: "POST", headers: { ...headers, prefer: "return=minimal" }, body: JSON.stringify(entry) });
+    const headers = {
+      apikey: serviceKey,
+      authorization: `Bearer ${serviceKey}`,
+      "content-type": "application/json",
+    };
+    await fetch(`${supaUrl}/rest/v1/ingest_log`, {
+      method: "POST",
+      headers: { ...headers, prefer: "return=minimal" },
+      body: JSON.stringify(entry),
+    });
     const weekAgo = new Date(Date.now() - 7 * 86400_000).toISOString();
-    await fetch(`${supaUrl}/rest/v1/ingest_log?created_at=lt.${encodeURIComponent(weekAgo)}`, { method: "DELETE", headers });
-  } catch { /* logging must never break ingestion */ }
+    await fetch(
+      `${supaUrl}/rest/v1/ingest_log?created_at=lt.${encodeURIComponent(weekAgo)}`,
+      { method: "DELETE", headers },
+    );
+  } catch {
+    /* logging must never break ingestion */
+  }
 }
 
 // Accepts raw text, JSON ({ text | message | raw_text | body }), or a form post.
@@ -42,28 +59,52 @@ async function readMessage(req) {
       text = j.raw_text ?? j.text ?? j.message ?? j.body ?? "";
       sender = j.sender ?? j.from ?? "";
       source = j.source ?? source;
-    } catch { text = raw; /* not valid JSON — treat as plain text */ }
+    } catch {
+      text = raw; /* not valid JSON — treat as plain text */
+    }
   } else if (type.includes("x-www-form-urlencoded")) {
     // Some apps send plain text under this type by default; use the fields if present, else the raw body.
     const p = new URLSearchParams(raw);
-    const field = p.get("raw_text") || p.get("text") || p.get("message") || p.get("body");
+    const field =
+      p.get("raw_text") || p.get("text") || p.get("message") || p.get("body");
     text = field || raw;
     sender = p.get("sender") || p.get("from") || "";
     source = p.get("source") || source;
   }
-  return { text: String(text).replace(/\u0000/g, "").trim().slice(0, 2000), sender: String(sender).slice(0, 60), source: String(source).slice(0, 20) };
+  return {
+    text: String(text)
+      .replace(/\u0000/g, "")
+      .trim()
+      .slice(0, 2000),
+    sender: String(sender).slice(0, 60),
+    source: String(source).slice(0, 20),
+  };
 }
 
 export default async (req) => {
   // Pasted values often carry stray spaces, newlines or quotes — forgive those.
-  const clean = (v) => String(v ?? "").trim().replace(/^["']|["']$/g, "").trim();
+  const clean = (v) =>
+    String(v ?? "")
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .trim();
   const secret = clean(process.env.INGEST_KEY);
-  const supaUrl = clean(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL).replace(/\/$/, "");
+  const supaUrl = clean(
+    process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL,
+  ).replace(/\/$/, "");
   const serviceKey = clean(process.env.SUPABASE_SERVICE_KEY);
-  const missing = [["INGEST_KEY", secret], ["SUPABASE_URL", supaUrl], ["SUPABASE_SERVICE_KEY", serviceKey]].filter(([, v]) => !v).map(([n]) => n);
+  const missing = [
+    ["INGEST_KEY", secret],
+    ["SUPABASE_URL", supaUrl],
+    ["SUPABASE_SERVICE_KEY", serviceKey],
+  ]
+    .filter(([, v]) => !v)
+    .map(([n]) => n);
   const configured = missing.length === 0;
   const url = new URL(req.url);
-  const given = clean(req.headers.get("x-ingest-key") || url.searchParams.get("key") || "");
+  const given = clean(
+    req.headers.get("x-ingest-key") || url.searchParams.get("key") || "",
+  );
 
   // Connection check: open  <this address>?key=YOUR_SECRET  in the phone's browser.
   // Without the key it only says whether the server is configured; it never reveals anything else.
@@ -75,54 +116,119 @@ export default async (req) => {
       if (configured && !out.keyOk) out.sentKeyLength = given.length; // compare with the length of your INGEST_KEY
       if (out.keyOk) {
         try {
-          const r = await fetch(`${supaUrl}/rest/v1/pending_transactions?select=id&limit=1`, { headers: { apikey: serviceKey, authorization: `Bearer ${serviceKey}` } });
-          out.table = r.ok ? "ready" : r.status === 404 ? "missing — run SUPABASE_INBOX.sql" : `error ${r.status}`;
-        } catch { out.table = "can't reach Supabase — check SUPABASE_URL"; }
+          const r = await fetch(
+            `${supaUrl}/rest/v1/pending_transactions?select=id&limit=1`,
+            {
+              headers: {
+                apikey: serviceKey,
+                authorization: `Bearer ${serviceKey}`,
+              },
+            },
+          );
+          out.table = r.ok
+            ? "ready"
+            : r.status === 404
+              ? "missing — run SUPABASE_INBOX.sql"
+              : `error ${r.status}`;
+        } catch {
+          out.table = "can't reach Supabase — check SUPABASE_URL";
+        }
       }
     }
     return json(200, out);
   }
 
   if (req.method !== "POST") return json(405, { error: "POST or GET only" });
-  if (!configured) return json(500, { error: "Server is not configured (missing environment variables)." });
+  if (!configured)
+    return json(500, {
+      error: "Server is not configured (missing environment variables).",
+    });
   // ?src=sms or ?src=notif on the URL labels which macro sent it (shown in the app's connection log)
   const label = clean(url.searchParams.get("src")).slice(0, 12);
   if (!safeEqual(given, secret)) {
-    await logEvent(supaUrl, serviceKey, { source: label || null, result: "rejected", reason: "wrong key", length: 0 });
+    await logEvent(supaUrl, serviceKey, {
+      source: label || null,
+      result: "rejected",
+      reason: "wrong key",
+      length: 0,
+    });
     return json(401, { error: "Wrong or missing key." });
   }
 
   const msg = await readMessage(req);
   const { text, sender } = msg;
   const source = label || msg.source;
-  const log = (result, reason, extra = {}) => logEvent(supaUrl, serviceKey, { source, result, reason, length: text.length, ...extra });
-  if (!text) { await log("rejected", "empty body"); return json(400, { error: "Empty message." }); }
-
-  // Keep the database clean: only store messages that look like a payment, never OTPs.
-  const hasAmount = /(?:rs\.?|inr|₹)\s*[\d,]+/i.test(text) || /(?:debited|credited)\s+(?:by|with)\s+[\d,]+/i.test(text);
-  const isOtp = /\botp\b|one[\s-]?time\s+password|verification code/i.test(text);
-  if (!hasAmount || isOtp) {
-    const reason = isOtp ? "otp" : "no amount found";
-    await log("skipped", reason);
-    return json(200, { stored: false, reason: isOtp ? "otp" : "no amount found in message", received: text.slice(0, 80) });
+  const log = (result, reason, extra = {}) =>
+    logEvent(supaUrl, serviceKey, {
+      source,
+      result,
+      reason,
+      length: text.length,
+      ...extra,
+    });
+  if (!text) {
+    await log("rejected", "empty body");
+    return json(400, { error: "Empty message." });
   }
 
-  const headers = { apikey: serviceKey, authorization: `Bearer ${serviceKey}`, "content-type": "application/json" };
+  // Keep the database clean: only store messages that look like a payment, never OTPs.
+  const hasAmount =
+    /(?:rs\.?|inr|₹)\s*[\d,]+/i.test(text) ||
+    /(?:debited|credited)\s+(?:by|with)\s+[\d,]+/i.test(text);
+  const isOtp = /\botp\b|one[\s-]?time\s+password|verification code/i.test(
+    text,
+  );
+  const hasVerb =
+    /\b(?:debited|credited|received|paid|sent|spent|withdrawn|transferred|payment of|dr|cr)\b/i.test(
+      text,
+    );
+  if (!hasAmount || isOtp || !hasVerb) {
+    const reason = isOtp
+      ? "otp"
+      : !hasAmount
+        ? "no amount found"
+        : "not a payment";
+    await log(
+      "skipped",
+      reason,
+      reason === "no amount found" ? { preview: text.slice(0, 60) } : {},
+    );
+    return json(200, {
+      stored: false,
+      reason,
+      received: isOtp ? undefined : text.slice(0, 80),
+    });
+  }
+
+  const headers = {
+    apikey: serviceKey,
+    authorization: `Bearer ${serviceKey}`,
+    "content-type": "application/json",
+  };
 
   // The same SMS can trigger the phone twice — skip an identical message from the last 90 seconds.
   const since = new Date(Date.now() - 90_000).toISOString();
   const dupRes = await fetch(
     `${supaUrl}/rest/v1/pending_transactions?select=id&raw_text=eq.${encodeURIComponent(text)}&created_at=gte.${encodeURIComponent(since)}&limit=1`,
-    { headers }
+    { headers },
   );
-  if (dupRes.ok && (await dupRes.json()).length) { await log("skipped", "duplicate"); return json(200, { stored: false, reason: "duplicate" }); }
+  if (dupRes.ok && (await dupRes.json()).length) {
+    await log("skipped", "duplicate");
+    return json(200, { stored: false, reason: "duplicate" });
+  }
 
   const ins = await fetch(`${supaUrl}/rest/v1/pending_transactions`, {
     method: "POST",
     headers: { ...headers, prefer: "return=minimal" },
     body: JSON.stringify({ raw_text: text, sender, source }),
   });
-  if (!ins.ok) { await log("error", "couldn't save"); return json(502, { error: "Couldn't save the message.", detail: (await ins.text()).slice(0, 200) }); }
+  if (!ins.ok) {
+    await log("error", "couldn't save");
+    return json(502, {
+      error: "Couldn't save the message.",
+      detail: (await ins.text()).slice(0, 200),
+    });
+  }
   await log("stored", "added to inbox", { preview: text.slice(0, 60) });
   return json(200, { stored: true });
 };
