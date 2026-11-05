@@ -18,6 +18,17 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+// Records what happened to every request, so the app's Inbox can show whether your phone is
+// really reaching the server. Never stores the content of messages that were discarded.
+async function logEvent(supaUrl, serviceKey, entry) {
+  try {
+    const headers = { apikey: serviceKey, authorization: `Bearer ${serviceKey}`, "content-type": "application/json" };
+    await fetch(`${supaUrl}/rest/v1/ingest_log`, { method: "POST", headers: { ...headers, prefer: "return=minimal" }, body: JSON.stringify(entry) });
+    const weekAgo = new Date(Date.now() - 7 * 86400_000).toISOString();
+    await fetch(`${supaUrl}/rest/v1/ingest_log?created_at=lt.${encodeURIComponent(weekAgo)}`, { method: "DELETE", headers });
+  } catch { /* logging must never break ingestion */ }
+}
+
 // Accepts raw text, JSON ({ text | message | raw_text | body }), or a form post.
 async function readMessage(req) {
   const type = (req.headers.get("content-type") || "").toLowerCase();
@@ -74,15 +85,27 @@ export default async (req) => {
 
   if (req.method !== "POST") return json(405, { error: "POST or GET only" });
   if (!configured) return json(500, { error: "Server is not configured (missing environment variables)." });
-  if (!safeEqual(given, secret)) return json(401, { error: "Wrong or missing key." });
+  // ?src=sms or ?src=notif on the URL labels which macro sent it (shown in the app's connection log)
+  const label = clean(url.searchParams.get("src")).slice(0, 12);
+  if (!safeEqual(given, secret)) {
+    await logEvent(supaUrl, serviceKey, { source: label || null, result: "rejected", reason: "wrong key", length: 0 });
+    return json(401, { error: "Wrong or missing key." });
+  }
 
-  const { text, sender, source } = await readMessage(req);
-  if (!text) return json(400, { error: "Empty message." });
+  const msg = await readMessage(req);
+  const { text, sender } = msg;
+  const source = label || msg.source;
+  const log = (result, reason, extra = {}) => logEvent(supaUrl, serviceKey, { source, result, reason, length: text.length, ...extra });
+  if (!text) { await log("rejected", "empty body"); return json(400, { error: "Empty message." }); }
 
   // Keep the database clean: only store messages that look like a payment, never OTPs.
   const hasAmount = /(?:rs\.?|inr|₹)\s*[\d,]+/i.test(text) || /(?:debited|credited)\s+(?:by|with)\s+[\d,]+/i.test(text);
   const isOtp = /\botp\b|one[\s-]?time\s+password|verification code/i.test(text);
-  if (!hasAmount || isOtp) return json(200, { stored: false, reason: isOtp ? "otp" : "no amount found in message", received: text.slice(0, 80) });
+  if (!hasAmount || isOtp) {
+    const reason = isOtp ? "otp" : "no amount found";
+    await log("skipped", reason);
+    return json(200, { stored: false, reason: isOtp ? "otp" : "no amount found in message", received: text.slice(0, 80) });
+  }
 
   const headers = { apikey: serviceKey, authorization: `Bearer ${serviceKey}`, "content-type": "application/json" };
 
@@ -92,13 +115,14 @@ export default async (req) => {
     `${supaUrl}/rest/v1/pending_transactions?select=id&raw_text=eq.${encodeURIComponent(text)}&created_at=gte.${encodeURIComponent(since)}&limit=1`,
     { headers }
   );
-  if (dupRes.ok && (await dupRes.json()).length) return json(200, { stored: false, reason: "duplicate" });
+  if (dupRes.ok && (await dupRes.json()).length) { await log("skipped", "duplicate"); return json(200, { stored: false, reason: "duplicate" }); }
 
   const ins = await fetch(`${supaUrl}/rest/v1/pending_transactions`, {
     method: "POST",
     headers: { ...headers, prefer: "return=minimal" },
     body: JSON.stringify({ raw_text: text, sender, source }),
   });
-  if (!ins.ok) return json(502, { error: "Couldn't save the message.", detail: (await ins.text()).slice(0, 200) });
+  if (!ins.ok) { await log("error", "couldn't save"); return json(502, { error: "Couldn't save the message.", detail: (await ins.text()).slice(0, 200) }); }
+  await log("stored", "added to inbox", { preview: text.slice(0, 60) });
   return json(200, { stored: true });
 };

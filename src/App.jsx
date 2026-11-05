@@ -276,6 +276,7 @@ export default function App() {
   const [inboxRows, setInboxRows] = useState([]);
   const [localRows, setLocalRows] = useState([]); // messages pasted into the Inbox tab
   const [inboxError, setInboxError] = useState("");
+  const [ingestLog, setIngestLog] = useState(null);
   const [drafts, setDrafts] = useState({});
   const [learned, setLearned] = useState(() => { try { return JSON.parse(localStorage.getItem("finance_last4") || "{}"); } catch { return {}; } });
   const asked = useRef(new Set());
@@ -285,6 +286,9 @@ export default function App() {
     if (error) { setInboxError(/does not exist|relation|schema cache|404/i.test(`${error.message} ${error.code}`) || error.code === "42P01" || error.code === "PGRST205" ? "setup" : "network"); return; }
     setInboxError("");
     setInboxRows(data || []);
+    // connection log is optional (needs the ingest_log table) — null means "not available"
+    const log = await supabase.from("ingest_log").select("id, created_at, source, result, reason, length, preview").order("created_at", { ascending: false }).limit(8);
+    setIngestLog(log.error ? null : log.data || []);
   }, []);
   useEffect(() => {
     if (!unlocked) return;
@@ -306,9 +310,11 @@ export default function App() {
       return { id: row.id, row, createdAt: new Date(row.created_at).getTime(), parsed };
     });
     const { drop, flag } = findDuplicates(all, transactions);
-    const junk = all.filter((i) => i.parsed.ignore).map((i) => i.id);
+    // OTPs and "will be debited"-type notices are cleared quietly; messages we simply couldn't read are kept so you can see them
+    const junk = all.filter((i) => i.parsed.ignore && i.parsed.reason !== "no payment found" && i.parsed.reason !== "empty").map((i) => i.id);
+    const unreadable = all.filter((i) => i.parsed.ignore && (i.parsed.reason === "no payment found" || i.parsed.reason === "empty")).sort((a, b) => b.createdAt - a.createdAt);
     const items = all.filter((i) => !i.parsed.ignore && !drop.has(i.id)).sort((a, b) => b.createdAt - a.createdAt);
-    return { items, flag, remove: [...new Set([...drop, ...junk])] };
+    return { items, unreadable, flag, remove: [...new Set([...drop, ...junk])] };
   }, [inboxRows, localRows, accounts, transactions, learned]);
 
   const removeRows = useCallback(async (ids) => {
@@ -733,6 +739,8 @@ export default function App() {
             setDraft={setDraft}
             accounts={accounts}
             flaggedIds={inbox.flag}
+            unreadable={inbox.unreadable}
+            log={ingestLog}
             error={inboxError}
             onAdd={(it) => approveInbox([it])}
             onAddAll={() => approveInbox(inbox.items.filter((i) => drafts[i.id]?.accountId && !inbox.flag.has(i.id)))}
@@ -1487,6 +1495,52 @@ function CopyField({ label, value }) {
   );
 }
 
+function ConnectionCard({ log }) {
+  const [open, setOpen] = useState(false);
+  if (log === null) {
+    return (
+      <div style={{ background: T.card, border: `1px dashed ${T.faint}`, borderRadius: 14, padding: 12, fontSize: 12, color: T.muted, lineHeight: 1.5 }}>
+        <strong style={{ color: T.text2 }}>Phone connection status isn't set up.</strong> Run the new <span className="mono">ingest_log</span> block from SUPABASE_INBOX.sql to see whether your phone is reaching the server.
+      </div>
+    );
+  }
+  const last = log[0];
+  const hint = (e) => {
+    if (e.reason === "wrong key") return "The secret in MacroDroid's x-ingest-key header doesn't match INGEST_KEY.";
+    if (e.reason === "empty body") return "MacroDroid sent nothing — in the HTTP action's body pick the SMS message / notification text.";
+    if (e.reason === "no amount found") return `A ${e.length}-character message arrived with no ₹/Rs amount — check the body isn't just a placeholder.`;
+    if (e.result === "error") return "The server couldn't save it — check the Supabase keys in Netlify.";
+    return "";
+  };
+  const tone = (e) => (e.result === "stored" ? T.pos : e.result === "skipped" && e.reason !== "no amount found" ? T.muted : T.neg);
+  const label = (e) => (e.result === "stored" ? "added to inbox" : e.result === "skipped" ? `skipped · ${e.reason}` : `${e.result} · ${e.reason}`);
+  const lastBad = last && (last.result === "rejected" || last.result === "error" || last.reason === "no amount found");
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.line}`, borderRadius: 14, padding: 12, boxShadow: T.shadow }}>
+      <button onClick={() => setOpen(!open)} className="flex items-center gap-2 w-full" style={{ textAlign: "left", color: T.ink }}>
+        <span style={{ width: 9, height: 9, borderRadius: 99, background: !last ? T.warn : lastBad ? T.neg : T.pos, flexShrink: 0 }} />
+        <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>
+          {!last ? "Nothing received from your phone yet" : `Phone last reached the server ${agoText(last.created_at)}`}
+        </span>
+        {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+      </button>
+      {last && lastBad && hint(last) && <div style={{ fontSize: 12, color: T.neg, marginTop: 6, lineHeight: 1.45 }}>{hint(last)}</div>}
+      {!last && <div style={{ fontSize: 12, color: T.muted, marginTop: 6, lineHeight: 1.45 }}>If MacroDroid ran, it never got through. Check the URL, header and body in its HTTP action. If it never ran, check its permissions and triggers.</div>}
+      {open && log.length > 0 && (
+        <div className="flex flex-col gap-1.5" style={{ marginTop: 10 }}>
+          {log.map((e) => (
+            <div key={e.id} style={{ fontSize: 12, lineHeight: 1.4 }}>
+              <span style={{ color: T.faint }}>{agoText(e.created_at)} · {e.source || "phone"} · </span>
+              <span style={{ color: tone(e), fontWeight: 600 }}>{label(e)}</span>
+              {e.preview && <div style={{ color: T.faint, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.preview}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InboxCard({ item, accounts, draft, setDraft, flagged, onAdd, onIgnore }) {
   const isIncome = draft.type === "income";
   const cats = isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
@@ -1536,7 +1590,7 @@ function InboxCard({ item, accounts, draft, setDraft, flagged, onAdd, onIgnore }
   );
 }
 
-function InboxTab({ items, drafts, setDraft, accounts, flaggedIds, error, onAdd, onAddAll, onIgnore, onRefresh, onPaste }) {
+function InboxTab({ items, drafts, setDraft, accounts, flaggedIds, unreadable = [], log, error, onAdd, onAddAll, onIgnore, onRefresh, onPaste }) {
   const [guide, setGuide] = useState(false);
   const [paste, setPaste] = useState("");
   const [pasteMsg, setPasteMsg] = useState("");
@@ -1557,6 +1611,23 @@ function InboxTab({ items, drafts, setDraft, accounts, flaggedIds, error, onAdd,
           <IconButton label="Refresh" onClick={onRefresh}><RefreshCw size={15} /></IconButton>
         </div>
       </div>
+
+      <ConnectionCard log={log} />
+
+      {unreadable.length > 0 && (
+        <div style={{ background: T.card, border: `1px solid ${T.warn}`, borderRadius: 14, padding: 14, boxShadow: T.shadow }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: T.ink, marginBottom: 2 }}>{unreadable.length} {unreadable.length === 1 ? "message" : "messages"} couldn't be read</div>
+          <div style={{ fontSize: 11.5, color: T.muted, marginBottom: 8 }}>They reached the server but don't look like a payment I understand. Send me the text and I'll teach the app that format.</div>
+          <div className="flex flex-col gap-2">
+            {unreadable.map((u) => (
+              <div key={u.id} className="flex items-start gap-2" style={{ background: T.soft, borderRadius: 10, padding: "8px 10px" }}>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: T.text2, lineHeight: 1.4, wordBreak: "break-word" }}>{u.row.raw_text}<div style={{ fontSize: 10.5, color: T.faint, marginTop: 2 }}>{u.row.source || "sms"} · {agoText(u.row.created_at)}</div></div>
+                <button onClick={() => onIgnore(u)} aria-label="Dismiss" style={{ color: T.muted }}><X size={15} /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error === "setup" && (
         <div style={{ background: T.card, border: `1px solid ${T.warn}`, borderRadius: 14, padding: 14, fontSize: 12.5, color: T.text2, lineHeight: 1.55 }}>
@@ -1595,7 +1666,8 @@ function InboxTab({ items, drafts, setDraft, accounts, flaggedIds, error, onAdd,
         </button>
         {guide && (
           <div className="flex flex-col gap-3 mt-3" style={{ fontSize: 12.5, color: T.text2, lineHeight: 1.55 }}>
-            <CopyField label="Web address (URL)" value={endpoint} />
+            <CopyField label="Web address (URL) — SMS macro" value={`${endpoint}?src=sms`} />
+            <CopyField label="Web address (URL) — notification macro" value={`${endpoint}?src=notif`} />
             <CopyField label="Header name" value="x-ingest-key" />
             <div>In <strong>MacroDroid</strong>, make a macro: <strong>Trigger</strong> “SMS Received” (add one trigger per word: <em>debited</em>, <em>credited</em>, <em>received</em>) and another “Notification Received” for your payment app. <strong>Action</strong> “HTTP Request”: method <strong>POST</strong>, the URL above, content type <strong>text/plain</strong>, header <span className="mono">x-ingest-key</span> = your secret key, and body = the <strong>SMS message</strong> (or notification title + text) from the magic-text list.</div>
             <div style={{ color: T.muted }}>The secret key is the <span className="mono">INGEST_KEY</span> you set in Netlify. OTPs and non-payment messages are discarded before they're stored.</div>
